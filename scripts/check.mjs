@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Guards the things that silently rot in a multi-document standard: section
 // cross-references (§N), internal links, the version number that has to agree
-// across four files, and the MANIFEST consumers copy from. No dependencies by design — this repo must never
-// grow a build step.
+// across four files, and the MANIFEST consumers copy from. No dependencies by
+// design — this repo must never grow a build step.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,8 @@ export function checkText(relPath, text, fileExists, sectionsOf = () => new Set(
 
   // `[conventions §4](conventions.md)` — a §N inside a link resolves against the
   // link's target, not this document. Check it there, then hide it from the local pass.
-  body = body.replace(/\[([^\]]*§\d+[^\]]*)\]\(([^)\s]+)\)/g, (whole, label, target) => {
+  body = body.replace(/\[([^\n]*?§\d+[^\n]*?)\]\(([^)]+)\)/g, (whole, label, rawTarget) => {
+    const target = rawTarget.split(/\s+/)[0]; // drop an optional "title"
     if (/^(https?:|mailto:|#)/.test(target) || target.startsWith("/")) return whole;
     const [path] = target.split("#");
     const resolved = relative(ROOT, resolve(ROOT, dirname(relPath), path));
@@ -43,7 +44,7 @@ export function checkText(relPath, text, fileExists, sectionsOf = () => new Set(
         problems.push(`${relPath}: ${label.trim()} — no "## ${m[1]}." heading in ${resolved}`);
       }
     }
-    return `[${label.replace(/§\d+/g, "§")}](${target})`;
+    return `[${label.replace(/§\d+/g, "§")}](${rawTarget})`;
   });
 
   const sections = new Set();
@@ -107,6 +108,9 @@ export function checkVersions(files) {
 /**
  * MANIFEST lists the files a consuming repo copies into docs/product-standard/.
  * Every entry must exist, or the adopt snippet in README.md fetches a 404.
+ * One repo-root-relative path per line, no comments — the README's
+ * `for f in $(curl …/MANIFEST)` loop word-splits on whitespace and must never
+ * see a `#`.
  * @param {string} manifest  the MANIFEST text, one repo-root-relative path per line
  * @param {(p: string) => boolean} fileExists
  * @returns {string[]}
@@ -115,7 +119,7 @@ export function checkManifest(manifest, fileExists) {
   return manifest
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l && !l.startsWith("#"))
+    .filter((l) => l)
     .filter((f) => !fileExists(f))
     .map((f) => `MANIFEST: "${f}" does not exist`);
 }
@@ -134,25 +138,36 @@ function walk(dir) {
   });
 }
 
-// CLI entry: only runs when invoked directly, so importing from tests is side-effect free.
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const docs = [...walk(join(ROOT, "standards")), ...walk(join(ROOT, "guides"))];
-  const rootDocs = ["README.md", "CHANGELOG.md"].map((f) => join(ROOT, f)).filter(existsSync);
-  const exists = (p) => existsSync(join(ROOT, p));
-  const sectionsOf = (p) => (exists(p) ? sectionsIn(readFileSync(join(ROOT, p), "utf8")) : new Set());
+/**
+ * Runs every check against a repo rooted at `root` and returns the result —
+ * no console output, no process.exit, so it's callable from a test.
+ * @param {string} root  absolute path to the repo root to check
+ * @returns {{ problems: string[], count: number }}
+ */
+export function runCli(root) {
+  const docs = [...walk(join(root, "standards")), ...walk(join(root, "guides"))];
+  const rootDocs = ["README.md", "CHANGELOG.md"].map((f) => join(root, f)).filter(existsSync);
+  const exists = (p) => existsSync(join(root, p));
+  const sectionsOf = (p) => (exists(p) ? sectionsIn(readFileSync(join(root, p), "utf8")) : new Set());
   const problems = [...docs, ...rootDocs].flatMap((f) =>
-    checkText(relative(ROOT, f), readFileSync(f, "utf8"), exists, sectionsOf),
+    checkText(relative(root, f), readFileSync(f, "utf8"), exists, sectionsOf),
   );
   const versioned = {};
   for (const f of ["package.json", "standards/architecture.md", "README.md", "CHANGELOG.md"]) {
-    if (exists(f)) versioned[f] = readFileSync(join(ROOT, f), "utf8");
+    if (exists(f)) versioned[f] = readFileSync(join(root, f), "utf8");
   }
   if (Object.keys(versioned).length > 1) problems.push(...checkVersions(versioned));
-  if (exists("MANIFEST")) problems.push(...checkManifest(readFileSync(join(ROOT, "MANIFEST"), "utf8"), exists));
+  if (exists("MANIFEST")) problems.push(...checkManifest(readFileSync(join(root, "MANIFEST"), "utf8"), exists));
+  return { problems, count: docs.length + rootDocs.length };
+}
+
+// CLI entry: only runs when invoked directly, so importing from tests is side-effect free.
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const { problems, count } = runCli(ROOT);
   if (problems.length) {
     console.error(`${problems.length} problem(s):`);
     for (const p of problems) console.error(`  ${p}`);
     process.exit(1);
   }
-  console.log(`✓ ${docs.length + rootDocs.length} document(s) clean`);
+  console.log(`✓ ${count} document(s) clean`);
 }

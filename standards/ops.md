@@ -135,7 +135,7 @@ CREATE TABLE sessions (
   id            TEXT PRIMARY KEY,
   user_id       TEXT NOT NULL REFERENCES users(id),
   tenant_id     TEXT,               -- null for a pre-tenant / platform session
-  token_hash    TEXT NOT NULL,      -- sha256 of the 32-byte opaque token
+  token_hash    TEXT NOT NULL UNIQUE,   -- sha256 of the 32-byte opaque token; UNIQUE = the lookup index
   created_at    INTEGER NOT NULL,
   last_seen_at  INTEGER NOT NULL,   -- sliding-expiry anchor
   expires_at    INTEGER NOT NULL
@@ -151,14 +151,22 @@ password hash.
 query:
 
 ```sql
-SELECT sessions.*, users.*
+SELECT sessions.id         AS session_id,
+       sessions.tenant_id  AS session_tenant_id,
+       sessions.expires_at AS session_expires_at,
+       sessions.last_seen_at,
+       users.id            AS user_id,
+       users.email, users.rank
 FROM sessions JOIN users ON users.id = sessions.user_id
 WHERE sessions.token_hash = ?1 AND sessions.expires_at > ?2;
 ```
 
 — *Why:* a route that needs the user's tenant, rank, or name has it from this one read;
 a second "also fetch the user" query is a cost that only shows up in aggregate, at
-scale, in a bill.
+scale, in a bill. The columns are aliased, because D1 keys a row by bare column name and
+`sessions.*, users.*` would let `users.id` silently overwrite `sessions.id`. The
+`token_hash` column is `UNIQUE`, which is what makes this lookup O(1) rather than a
+table scan.
 
 **Sessions are sliding-expiry, 30 days, refreshed at most every 10 minutes.** On a valid
 read, if `now - last_seen_at > 10 minutes`, the row is rewritten (`last_seen_at = now`,
@@ -226,6 +234,16 @@ account.
 *Why:* the same enumeration reasoning as sign-in, on the one other endpoint that takes a
 bare email.
 
+**PBKDF2-SHA256 via WebCrypto is the recorded-deviation alternative to scrypt**, for a
+product that can't take the platform assumption below. — *Why:* WebCrypto's PBKDF2 runs
+with no compatibility flag; the trade is weaker memory-hardness, which is why it's a
+deviation and not the default.
+
+**Platform assumptions: Workers Paid; compatibility date ≥ 2026-08-04, or
+`nodejs_compat` explicitly enabled.** — *Why:* `node:crypto`'s scrypt needs Node
+compatibility, and its cost at `N=2¹⁴` needs the higher CPU-time ceiling Workers Paid
+grants — the Free plan can hit its wall under load.
+
 ### 4.1 OAuth
 
 - **Google is the baseline provider; LINE is added where the market needs it** (e.g. a
@@ -242,16 +260,6 @@ bare email.
   *Why:* an unchecked `return_to` is an open redirect; on an OAuth callback, one with a
   valid session already attached.
 
-**PBKDF2-SHA256 via WebCrypto is the recorded-deviation alternative to scrypt**, for a
-product that can't take the platform assumption below. — *Why:* WebCrypto's PBKDF2 runs
-with no compatibility flag; the trade is weaker memory-hardness, which is why it's a
-deviation and not the default.
-
-**Platform assumptions: Workers Paid; compatibility date ≥ 2026-08-04, or
-`nodejs_compat` explicitly enabled.** — *Why:* `node:crypto`'s scrypt needs Node
-compatibility, and its cost at `N=2¹⁴` needs the higher CPU-time ceiling Workers Paid
-grants — the Free plan can hit its wall under load.
-
 ## 5. Tenancy
 
 **`src/worker/db/scope.ts` exports exactly three accessor factories — `forTenant`,
@@ -263,6 +271,9 @@ column's name does:**
 import { and, eq } from "drizzle-orm";
 import type { Db } from "./client";        // the drizzle client, built once from env.DB
 import { users, widgets } from "./schema";
+import type { Principal } from "#shared/types/principal";
+import { RANK } from "#shared/types/principal";
+import { ApiError } from "../lib/errors";
 
 export function forTenant(db: Db, tenantId: string) {
   return {
@@ -273,9 +284,12 @@ export function forTenant(db: Db, tenantId: string) {
   };
 }
 
-// the one sanctioned "id from user input" path — grep this name for the
-// complete cross-tenant audit list
+// The one sanctioned "tenant id from user input" path — `grep forTenantAsStaff`
+// is the complete cross-tenant audit list. It authorizes before it scopes.
 export function forTenantAsStaff(db: Db, staff: Principal, tenantId: string) {
+  if (staff.kind !== "session" || (staff.rank ?? 0) < RANK.staff) {
+    throw new ApiError(403, "FORBIDDEN");
+  }
   return forTenant(db, tenantId);
 }
 
@@ -286,6 +300,10 @@ export function global(db: Db) {
   };
 }
 ```
+
+**The staff check lives inside the accessor, not at the call site.** — *Why:* a call
+site can forget; the accessor cannot — and `grep forTenantAsStaff` then lists every place
+cross-tenant access is *both* requested and checked.
 
 — *Why:* three fixed names are what let `grep forTenantAsStaff` be the complete
 cross-tenant audit list in any product on this stack, however that product spells its
@@ -467,9 +485,10 @@ request-level test.
 The `test:e2e` job (§8) runs separately and does not block merge until it's proven
 stable.
 
-**`check` runs, in order: `wrangler types`, the typecheck of all three TypeScript
-projects (client, worker, site), a Prettier format check at defaults, and the boundary
-scripts (§5).** **Prettier at defaults
+**`check` runs, at minimum and in this order: `wrangler types`, the typecheck of all
+three TypeScript projects, a Prettier format check at defaults, and the boundary scripts
+(§5); the full list of mechanizable checks a repo wires into `check` or `npm test` is
+[architecture §13](architecture.md).** **Prettier at defaults
 is the only formatter; there is no linter beyond typecheck** (a Nuxt-based repo keeps
 its `withNuxt()` eslint config as a recorded convention, not a deviation). — *Why:* one
 opinionated formatter with no config file removes a whole category of style

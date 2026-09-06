@@ -16,8 +16,9 @@ and pin it (§14). Implementation walkthroughs live in the guides:
 
 **Scope: repository structure.** The Worker's *internal* behavioral
 conventions — error handling, testing depth, env validation, auth/tenancy
-beyond the structural rules below — are fixed by the companion documents,
-[conventions.md](conventions.md) and [ops.md](ops.md), which §10–§12 point to.
+beyond the structural rules below — are fixed by the companion documents
+[conventions.md](conventions.md) and [ops.md](ops.md) (§10–§12 point at
+`ops.md`; `conventions.md` is referenced where names and shapes are fixed).
 Design tokens, dark mode, and component primitives are fixed by
 [styling.md](styling.md).
 

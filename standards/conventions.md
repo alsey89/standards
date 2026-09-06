@@ -86,8 +86,8 @@ redirect, and email template builds its URL from `APP_PATHS` + `fillPath()`;
 `check` greps for the exception:
 
 ```bash
-grep -rnE '"/app(/|")' src/client/pages src/client/components src/worker \
-  --include='*.ts' --include='*.tsx' | grep -v 'src/client/router\.'
+grep -rnE "[\"'\`]/app(/|[\"'\`])" src/client src/worker \
+  --include='*.ts' --include='*.tsx' --include='*.vue' | grep -v 'src/client/router\.'
 ```
 
 Expected: no output. — *Why:* a hardcoded path turns a rename into a
@@ -150,7 +150,7 @@ it can.
 | `GET /api/health` | outside `/api/v1` — liveness only, the one bare-envelope exception (§4) |
 
 **`GET /api/health` sits outside `/api/v1` with no envelope at all.** —
-*Why:* an uptime check wants `{ ok: true }` or a non-200, not `{ item }`;
+*Why:* an uptime check wants `{ ok: true, version }` or a non-200, not `{ item }`;
 versioning a liveness probe would just add churn to monitoring configs
 every time the API version bumps.
 
@@ -158,7 +158,7 @@ every time the API version bumps.
 
 **Success is one of two shapes: `{ item }` for one resource, `{ items,
 nextCursor, total? }` for a list.** `201 { item }` on create; `204` with an
-empty body for an action with nothing to return; `GET /api/health` → `{ ok,
+empty body for an action with nothing to return; `GET /api/health` → `{ ok: true,
 version }` is the one bare exception — not the `{ message, data, error: null
 }` envelope, and not a bare array. — *Why:* one two-slot shape lets `api.ts`
 (§4.3) unwrap generically regardless of resource, and lets a response grow
@@ -275,10 +275,12 @@ drifting from what the Worker actually enforces.
 **`src/client/api.ts` is the only file in the SPA that calls `fetch`.** It
 sends `credentials: "same-origin"` (cookies are same-origin only —
 [ops §2](ops.md))
-and an `X-Request-Id`, and exposes `get`, `list`, `post`, `patch`, `del`,
-each unwrapping `item`/`items` and throwing a typed `ApiError` on a non-2xx
-response. — *Why:* one boundary makes "add a header to every request" a
-one-file change instead of a grep-and-fix across every component.
+and an `X-Request-Id`, and exposes `get`, `list`, `post`, `patch`, `del`:
+`get`, `post`, `patch` unwrap `item`; `list` returns the list envelope intact
+(it needs `nextCursor`); `del` resolves on 204 — each throwing a typed
+`ApiError` on a non-2xx response. — *Why:* one boundary makes "add a header
+to every request" a one-file change instead of a grep-and-fix across every
+component.
 
 The Worker throws its own `ApiError` (`src/worker/services/util.ts`,
 [architecture §4](architecture.md)): the same name on the opposite side of the
@@ -354,7 +356,7 @@ export const listQuerySchema = z
     limit: z.coerce.number().int().min(1).max(200).default(50),
     cursor: z.string().optional(),
     sort: z.string().regex(/^[a-zA-Z]+:(asc|desc)$/).optional(),
-    total: z.coerce.boolean().optional(),
+    total: z.enum(["true", "false"]).transform((v) => v === "true").optional(),
   })
   .strict();
 
@@ -362,13 +364,18 @@ export const listQuerySchema = z
 // so an unrecognized filter is a 400, never a silently-ignored typo.
 export const listProjectsQuerySchema = listQuerySchema.extend({
   status: z.enum(["active", "archived"]).optional(),
+  sort: z.enum(["createdAt:desc", "createdAt:asc", "name:asc"]).default("createdAt:desc"),
 });
 ```
+
+The base schema's regex is the *format* a `sort` value must match; the resource's
+`z.enum` narrows that to the *allowlist* of fields this endpoint actually supports.
 
 **Keyset pagination on `(createdAt, id)` is the default; an endpoint may
 encode an offset inside its own cursor instead.** The cursor is opaque to
 the client either way — only the endpoint that issued it decodes it.
-`total` is opt-in (`?total=true`) and omitted by default. — *Why:* keyset
+`total` is opt-in (`?total=true`) and omitted by default (`?total=true` opts in;
+anything else is off — `z.coerce.boolean()` would make `?total=false` true). — *Why:* keyset
 stays correct while rows are inserted between page reads, unlike offset; an
 opaque cursor is what lets an endpoint change its internal strategy without
 breaking a client that stored one. `total` is opt-in because counting can
@@ -479,7 +486,7 @@ Which locales beyond `en`/`zh-TW` a product supports is product-specific.
 
 | What | Case | Example |
 |---|---|---|
-| Components and pages | PascalCase | `ProjectCard.tsx`, `ProjectsPage.tsx` |
+| Components and pages | PascalCase | `ProjectCard.vue` / `ProjectCard.tsx`, `ProjectsPage.tsx` |
 | Everything else (routes, services, db modules, scripts) | kebab-case | `forgot-password.ts`, `project-members.ts` |
 | Test files | mirrors the file under test, `*.test.ts` suffix | `project-members.test.ts` |
 | Error codes | SCREAMING_SNAKE | `VALIDATION_FAILED` |

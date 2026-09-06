@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkManifest, checkText, checkVersions, sectionsIn } from "../scripts/check.mjs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkManifest, checkText, checkVersions, runCli, sectionsIn } from "../scripts/check.mjs";
 
 // Every markdown file is checked in isolation; `fileExists` is injected so the
 // tests never touch the filesystem.
@@ -42,6 +45,22 @@ test("flags a linked section reference the target document does not define", () 
   assert.equal(problems.length, 1);
   assert.match(problems[0], /§12/);
   assert.match(problems[0], /standards\/ops\.md/);
+});
+
+test("resolves a linked section reference even when the link carries a title", () => {
+  const text = "# T\n\n## 1. One\n\nSee [ops §7](ops.md \"The ops doc\").\n";
+  const sectionsOf = () => new Set(["5"]);
+  const problems = checkText("standards/conventions.md", text, allFiles, sectionsOf);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /§7/);
+});
+
+test("resolves a linked section reference whose label contains a bracket", () => {
+  const text = "# T\n\n## 1. One\n\nSee [the [b] rule, ops §7](ops.md).\n";
+  const sectionsOf = () => new Set(["5"]);
+  const problems = checkText("standards/conventions.md", text, allFiles, sectionsOf);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /§7/);
 });
 
 test("sectionsIn lists a document's numbered sections and ignores fences", () => {
@@ -120,7 +139,7 @@ test("flags a missing version line", () => {
 });
 
 test("accepts a manifest whose every file exists", () => {
-  const manifest = "standards/architecture.md\n\n# comment\nguides/bootstrap.md\n";
+  const manifest = "standards/architecture.md\n\nguides/bootstrap.md\n";
   assert.deepEqual(checkManifest(manifest, allFiles), []);
 });
 
@@ -129,4 +148,35 @@ test("flags a manifest entry with no file — consumers would fetch a 404", () =
   const problems = checkManifest(manifest, (f) => f !== "standards/gone.md");
   assert.equal(problems.length, 1);
   assert.match(problems[0], /standards\/gone\.md/);
+});
+
+test("runCli walks a fixture repo end to end, via the CLI's own entry point", () => {
+  const makeFixture = (bContent) => {
+    const fixtureDir = mkdtempSync(join(tmpdir(), "check-cli-"));
+    mkdirSync(join(fixtureDir, "standards"), { recursive: true });
+    writeFileSync(join(fixtureDir, "standards/a.md"), "# T\n\n## 1. One\n\nSee [b §2](b.md).\n");
+    writeFileSync(join(fixtureDir, "standards/b.md"), bContent);
+    writeFileSync(join(fixtureDir, "package.json"), '{ "name": "fixture" }');
+    return fixtureDir;
+  };
+
+  // The linked §2 exists: a clean run over both fixture files.
+  const cleanDir = makeFixture("# T\n\n## 2. Two\n");
+  try {
+    const { problems, count } = runCli(cleanDir);
+    assert.deepEqual(problems, []);
+    assert.equal(count, 2);
+  } finally {
+    rmSync(cleanDir, { recursive: true, force: true });
+  }
+
+  // b.md has no "## 2." heading: the linked reference doesn't resolve.
+  const brokenDir = makeFixture("# T\n\nNo numbered section here.\n");
+  try {
+    const { problems } = runCli(brokenDir);
+    assert.equal(problems.length, 1);
+    assert.match(problems[0], /standards\/b\.md/);
+  } finally {
+    rmSync(brokenDir, { recursive: true, force: true });
+  }
 });
