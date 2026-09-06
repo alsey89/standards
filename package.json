@@ -1,0 +1,11 @@
+{
+  "name": "standards",
+  "version": "1.7.0",
+  "private": true,
+  "type": "module",
+  "description": "Product standards for alsey89 products — plain markdown, no build step.",
+  "scripts": {
+    "test": "node --test",
+    "check": "node scripts/check.mjs"
+  }
+}
