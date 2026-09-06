@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkText, checkVersions } from "../scripts/check.mjs";
+import { checkManifest, checkText, checkVersions } from "../scripts/check.mjs";
 
 // Every markdown file is checked in isolation; `fileExists` is injected so the
 // tests never touch the filesystem.
@@ -79,7 +79,6 @@ const agreeing = {
   "standards/architecture.md": "# T\n\n**Standard version: 1.7** — changelog in [CHANGELOG.md](../CHANGELOG.md).\n",
   "README.md": "# P\n\n**Current version: Product Standard v1.7.**\n",
   "CHANGELOG.md": "# Changelog\n\n## 1.7 — 2026-09-06\n\n## 1.6 — earlier\n",
-  ".claude-plugin/plugin.json": '{ "name": "product-standard" }',
 };
 
 test("accepts four agreeing version lines", () => {
@@ -100,9 +99,14 @@ test("flags a missing version line", () => {
   assert.match(problems[0], /CHANGELOG\.md: no version line/);
 });
 
-test("flags a version field in plugin.json — it would freeze consumers", () => {
-  const files = { ...agreeing, ".claude-plugin/plugin.json": '{ "name": "p", "version": "1.7.0" }' };
-  const problems = checkVersions(files);
+test("accepts a manifest whose every file exists", () => {
+  const manifest = "standards/architecture.md\n\n# comment\nguides/bootstrap.md\n";
+  assert.deepEqual(checkManifest(manifest, allFiles), []);
+});
+
+test("flags a manifest entry with no file — consumers would fetch a 404", () => {
+  const manifest = "standards/architecture.md\nstandards/gone.md\n";
+  const problems = checkManifest(manifest, (f) => f !== "standards/gone.md");
   assert.equal(problems.length, 1);
-  assert.match(problems[0], /plugin\.json/);
+  assert.match(problems[0], /standards\/gone\.md/);
 });

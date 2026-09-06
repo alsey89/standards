@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Guards the things that silently rot in a multi-document standard: section
-// cross-references (§N), internal links, and the version number that has to
-// agree across four files. No dependencies by design — this repo must never
+// cross-references (§N), internal links, the version number that has to agree
+// across four files, and the MANIFEST consumers copy from. No dependencies by design — this repo must never
 // grow a build step.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -60,9 +60,7 @@ export function checkText(relPath, text, fileExists) {
 }
 
 /**
- * The version is written in four places and must agree. plugin.json must NOT
- * carry one: a pinned plugin version freezes every consumer until it is bumped
- * (Claude Code only re-fetches a plugin when its version string changes).
+ * The version is written in four places and must agree.
  * @param {Record<string, string>} files  keyed by repo-root-relative path
  * @returns {string[]}
  */
@@ -86,10 +84,23 @@ export function checkVersions(files) {
     const list = Object.entries(found).map(([f, v]) => `${f}=${v}`).join(", ");
     problems.push(`version mismatch: ${list}`);
   }
-  if (files[".claude-plugin/plugin.json"] && "version" in JSON.parse(files[".claude-plugin/plugin.json"])) {
-    problems.push(`.claude-plugin/plugin.json: remove "version" — a pinned plugin version freezes consumers until bumped`);
-  }
   return problems;
+}
+
+/**
+ * MANIFEST lists the files a consuming repo copies into docs/product-standard/.
+ * Every entry must exist, or the adopt snippet in README.md fetches a 404.
+ * @param {string} manifest  the MANIFEST text, one repo-root-relative path per line
+ * @param {(p: string) => boolean} fileExists
+ * @returns {string[]}
+ */
+export function checkManifest(manifest, fileExists) {
+  return manifest
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .filter((f) => !fileExists(f))
+    .map((f) => `MANIFEST: "${f}" does not exist`);
 }
 
 function walk(dir) {
@@ -110,10 +121,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     checkText(relative(ROOT, f), readFileSync(f, "utf8"), exists),
   );
   const versioned = {};
-  for (const f of ["package.json", "standards/architecture.md", "README.md", "CHANGELOG.md", ".claude-plugin/plugin.json"]) {
+  for (const f of ["package.json", "standards/architecture.md", "README.md", "CHANGELOG.md"]) {
     if (exists(f)) versioned[f] = readFileSync(join(ROOT, f), "utf8");
   }
   if (Object.keys(versioned).length > 1) problems.push(...checkVersions(versioned));
+  if (exists("MANIFEST")) problems.push(...checkManifest(readFileSync(join(ROOT, "MANIFEST"), "utf8"), exists));
   if (problems.length) {
     console.error(`${problems.length} problem(s):`);
     for (const p of problems) console.error(`  ${p}`);
