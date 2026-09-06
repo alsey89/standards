@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { checkManifest, checkText, checkVersions } from "../scripts/check.mjs";
+import { checkManifest, checkText, checkVersions, sectionsIn } from "../scripts/check.mjs";
 
 // Every markdown file is checked in isolation; `fileExists` is injected so the
 // tests never touch the filesystem.
@@ -27,6 +27,26 @@ test("resolves a section reference to a heading that exists", () => {
 test("treats a sub-section reference as its parent section", () => {
   const text = "# T\n\n## 5. Five\n\nSee §5.2.\n";
   assert.deepEqual(checkText("standards/architecture.md", text, allFiles), []);
+});
+
+test("resolves a section reference inside a link against the link's target", () => {
+  const text = "# T\n\n## 1. One\n\nSee [ops §5](ops.md) and [ops §9](ops.md).\n";
+  const sectionsOf = (p) => (p === "standards/ops.md" ? new Set(["5", "9"]) : new Set());
+  assert.deepEqual(checkText("standards/conventions.md", text, allFiles, sectionsOf), []);
+});
+
+test("flags a linked section reference the target document does not define", () => {
+  const text = "# T\n\n## 1. One\n\nSee [ops §12](ops.md).\n";
+  const sectionsOf = () => new Set(["5"]);
+  const problems = checkText("standards/conventions.md", text, allFiles, sectionsOf);
+  assert.equal(problems.length, 1);
+  assert.match(problems[0], /§12/);
+  assert.match(problems[0], /standards\/ops\.md/);
+});
+
+test("sectionsIn lists a document's numbered sections and ignores fences", () => {
+  const text = "# T\n\n## 1. One\n\n```\n## 9. Not real\n```\n\n## 2. Two\n";
+  assert.deepEqual([...sectionsIn(text)], ["1", "2"]);
 });
 
 test("does not read a changelog version heading as a numbered section", () => {

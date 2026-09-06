@@ -2,66 +2,85 @@
 
 The assembly sequence for a new product conforming to the
 [architecture standard](../standards/architecture.md). There is no template repo
-(the standard's §14 records why); this is a hand-assembled checklist, and the
-invariants in the standard's §13 are the acceptance test.
+([architecture §14](../standards/architecture.md) records why); this is a
+hand-assembled checklist, and the invariants in
+[architecture §13](../standards/architecture.md) are the acceptance test.
 
 ## The skeleton, in order
 
-1. **Root scaffold:** `package.json` (the `marketing` workspace + the build
-   pipeline scripts), `vite.config.ts`, `wrangler.jsonc`, both tsconfigs,
-   `app.html`, `scripts/merge-marketing.mjs`.
+1. **Root scaffold:** `package.json` (the `site` workspace + the canonical
+   scripts — `dev`, `build`, `deploy`, `check`, `typecheck`, `test`,
+   `test:e2e`, `db:generate`, `db:migrate`, `db:migrate:remote`, `seed`,
+   `verify:serving`), `vite.config.ts`, `wrangler.jsonc`, both tsconfigs,
+   `app.html`, `scripts/merge-site.mjs`.
 2. **Cross-surface boundaries:** top-level `config/` (`brand.ts`, `routes.ts`
-   — pure typed data) and `styles/` (`tokens.css`), with the `#config/*`
-   subpath import declared in `package.json` `"imports"` and mirrored in all
-   three tsconfigs **and** `vite.config.ts`.
-3. **`src/` three-folder split:** `client/` (main.tsx, App.tsx, api.ts,
-   i18n.tsx, pages/, components/ui + features, lib/), `worker/` (index.ts,
-   routes/ with middleware.ts, services/, db/), `shared/` (types.ts + domain
-   helpers).
+   — pure typed data exporting `APP_BASE`, `APP_PATHS`, `PUBLIC_PREFIXES`,
+   `API_BASE`, `isAppPath()`, `fillPath()` —
+   [conventions §2.1](../standards/conventions.md)) and `styles/`
+   (`tokens.css` — the token contract is
+   [styling §2](../standards/styling.md)), with the `#config/*` subpath import
+   declared in `package.json` `"imports"` and mirrored in all three tsconfigs
+   **and** `vite.config.ts`.
+3. **`src/` three-folder split:** `client/` (`main.ts`, `router.ts`, `api.ts`,
+   `i18n/`, `pages/`, `components/{ui,shell,<area>}`, `stores/`, `lib/`),
+   `worker/` (`index.ts`, `env.ts`, `routes/`, `middleware/` — `principal.ts`
+   for resolution and guards, `scope.ts` as the sole scoped-accessor
+   construction site — `services/`, `db/{schema/,client.ts,scope.ts,global.ts}`),
+   `shared/` (`errors.ts`, `validators/`, `types/`).
 4. **The serving contract:** the Worker catch-all using `isAppPath()` from
    `config/routes.ts`, `app.html` as the SPA shell, no `not_found_handling`,
-   marketing owning `index.html`.
-5. **`marketing/`** Astro workspace importing `styles/tokens.css` and
+   the site owning `index.html`, and `run_worker_first` in `wrangler.jsonc` —
+   derived from `config/routes.ts`, never hand-mirrored, and asserted against
+   it by `test/shared/routes.test.ts`.
+5. **`site/`** Astro workspace importing `styles/tokens.css` and
    `#config/*`; static output; built-in i18n with an unprefixed default
    locale.
-6. **`migrations/`, `test/`, `docs/`** conventions; run `wrangler types` and
-   wire `npm run check`.
+6. **`migrations/`, `test/{worker,client,shared,e2e}`, `docs/`** conventions;
+   run `wrangler types` and wire `npm run check`.
 
-Backend-internal conventions — auth shape, testing bar, env validation — are a
-later phase (standard §10–§12); copy the reference implementation as a
-starting point.
+Backend-internal conventions — auth shape, testing bar, env validation — are
+set out in [ops](../standards/ops.md) and
+[conventions](../standards/conventions.md); copy the reference implementation
+as a starting point for what they leave product-specific (role models,
+domain logic).
 
 What changes per product: the domain and `wrangler` name, the `Env` bindings
 and DB name, the route modules and service/db domains, the `config/` values
-and token palette, and the marketing content. The *shape* stays identical.
+and token palette, and the site content. The *shape* stays identical.
 
 ## Verifying the serving model
 
-Run this after assembly and **after any change to the serving model** — there
-are no route-level tests for it, so the check is manual and cheap.
+`npm run verify:serving` is the canonical script for this — it runs against a
+built preview and CI gates on it (`check && test && build && verify:serving`,
+[architecture §8](../standards/architecture.md)). Wire it during bootstrap, before there is anything else to
+run it against: build, preview, and assert each path returns the expected
+source and status.
 
 ```sh
 npm run build && npm run preview
 ```
 
-Then assert each path returns the expected source and status:
+```
+/                 200 (site)     /app/<page>        200 (shell)
+/pricing/         200 (site)     /app/admin/<page>  200 (shell)
+/app/auth/sign-in 200 (shell)    /app/<res>/:id     200 (shell)
+/<res>            404 (site)     /garbage           404 (site)
+/api/v1/nope      404 (JSON)     /api/health        200 (JSON)
+```
 
-```
-/             200 (marketing)   /<section>    200 (shell)
-/pricing/     200 (marketing)   /<section>/   200 (shell)
-/admin/<page> 200 (shell)       /<res>/<slug> 200 (shell)
-/<res>        404 (marketing)   /garbage      404 (marketing)
-/api/nope     404 (JSON)
-```
+This table is what `verify:serving` should assert once it is wired — there is
+no template repo, so a new product writes the script once, following this
+table, and every later change to the serving model reruns it instead of
+retyping the checklist.
 
 The failure modes this catches: a SPA shell served with 200 for garbage URLs
-(missing catch-all logic), marketing pages falling through to the shell
-(asset merge broke), or app paths 404ing (drift between `config/routes.ts`
-and the mounted routes — which the `test/routes.test.ts` boundary pins should
-also catch).
+(missing catch-all logic), site pages falling through to the shell (asset
+merge broke), or app paths 404ing (drift between `config/routes.ts`, the
+`run_worker_first` list it derives, and the mounted routes — which
+`test/shared/routes.test.ts` should also catch).
 
-Finish with the full gate:
+Finish with the full gate — the same order CI runs:
 
 ```sh
-npm run check && npm test
+npm run check && npm test && npm run build && npm run verify:serving
 ```

@@ -19,7 +19,9 @@ snippet in the upstream README, as a reviewable commit.
 | Question | Document |
 |---|---|
 | Where does this file go? How does one Worker serve three surfaces? What does the build do? | `docs/product-standard/standards/architecture.md` |
-| Design tokens, component conventions | `docs/product-standard/standards/styling.md` |
+| URL and route names, `config/routes.ts`, the API response and error contract, pagination, i18n, naming | `docs/product-standard/standards/conventions.md` |
+| Sessions and API keys, passwords and OAuth, tenant scoping, env and secrets, rate limits, testing, CI, deploy | `docs/product-standard/standards/ops.md` |
+| Design tokens, dark mode, component conventions, fonts, icons | `docs/product-standard/standards/styling.md` |
 | Starting a new product from nothing | `docs/product-standard/guides/bootstrap.md` |
 | Wiring tenant isolation through the `db/` chokepoint | `docs/product-standard/guides/tenant-scoping.md` |
 

@@ -2,6 +2,30 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.0 — 2026-09-06
+
+The four-document set is complete: `architecture` (revised), `conventions` (new), `ops`
+(new), `styling` (filled). Written against a survey of eight product repos; every rule
+carries a why. **Nothing in 2.0 is retroactive** — a repo built to 1.7 conforms to 2.0 by
+recording its deviations in its README.
+
+- `marketing/` is `site/` (landing, docs, blog, legal, pricing). `src/` stays `src/`.
+- The authenticated app lives under `/app/*`; public product surfaces are declared in
+  `PUBLIC_PREFIXES`; `run_worker_first` is derived from `config/routes.ts`.
+- Auth vocabulary is `sign-in` / `sign-up` / `sign-out`; pages under `/app/auth/*`; API
+  under `/api/v1/auth/*`; session read at `GET /api/v1/auth/session`; `GET /api/health`.
+- Response contract: `{ item }` and `{ items, nextCursor, total? }`; errors
+  `{ error: { code, message, details?, traceId } }`; `204` for actions; `X-Request-Id`.
+- Every list endpoint is paginated: strict query validation, keyset by default, opaque
+  cursor, `total` opt-in.
+- Sessions are D1 rows resolved with API keys and integration tokens into one
+  `Principal`; JWTs only for short-lived single-purpose tokens; scrypt for passwords.
+- Tenancy accessors are always `forTenant` / `forTenantAsStaff` / `global`; the `db/`
+  boundary is enforced by `scripts/check-db-boundary.mjs` in `check`.
+- Every cookie is `${slug}_${purpose}`. `test/{worker,client,shared,e2e}` at the root.
+  Migrations always named. Canonical script names. Prettier. The shadcn token contract
+  with `.dark` always present.
+
 ## 1.7 — 2026-09-06
 
 Relocated from `docs.michaelchen.me` (a built Astro site) to this plain-markdown repo.

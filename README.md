@@ -3,18 +3,18 @@
 The canonical standards for [alsey89](https://github.com/alsey89) products. Plain
 markdown, no build step — what you read here *is* the published artifact.
 
-**Current version: Product Standard v1.7.**
+**Current version: Product Standard v2.0.**
 
 | Document | What it fixes |
 |---|---|
 | [standards/architecture.md](standards/architecture.md) | Repo layout, the three surfaces, the serving model, the build pipeline |
-| [standards/styling.md](standards/styling.md) | Design tokens and component conventions *(stub — v2.0)* |
+| [standards/conventions.md](standards/conventions.md) | Routes and URLs, the route declaration, the API contract, pagination, i18n, naming |
+| [standards/ops.md](standards/ops.md) | Principals and sessions, passwords and OAuth, tenancy, env and secrets, rate limiting, testing, CI and deploy |
+| [standards/styling.md](standards/styling.md) | The token contract, dark mode, components, type, icons |
 | [guides/bootstrap.md](guides/bootstrap.md) | Assembling a new product on the standard |
 | [guides/tenant-scoping.md](guides/tenant-scoping.md) | Wiring tenant isolation through the `db/` chokepoint |
 
-Planned for v2.0: `standards/conventions.md` (route symbols, i18n shape, import
-subpaths, migration numbering) and `standards/ops.md` (auth, testing contract,
-env/secrets, CI + deploy). Version history: [CHANGELOG.md](CHANGELOG.md).
+Version history: [CHANGELOG.md](CHANGELOG.md).
 
 ## How a repo adopts this
 
@@ -35,7 +35,7 @@ printf '%s\n' "$SHA" > docs/product-standard/PINNED
 
 Commit the result. `docs/product-standard/PINNED` is the machine-readable pin; the
 first entry of `docs/product-standard/CHANGELOG.md` names the version; record it in your
-README too — *"conforms to Product Standard v1.7"* — and bump deliberately when a
+README too — *"conforms to Product Standard v2.0"* — and bump deliberately when a
 CHANGELOG entry says a change is retroactive.
 
 **Never edit the copy.** Changes go upstream, here. Products reference a version; they

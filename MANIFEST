@@ -1,4 +1,6 @@
 standards/architecture.md
+standards/conventions.md
+standards/ops.md
 standards/styling.md
 guides/bootstrap.md
 guides/tenant-scoping.md

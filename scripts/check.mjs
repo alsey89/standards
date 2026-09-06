@@ -18,16 +18,33 @@ function stripFences(text) {
  * @param {string} relPath   path of the document, relative to repo root
  * @param {string} text      the document's full text
  * @param {(p: string) => boolean} fileExists  resolves a repo-root-relative path
+ * @param {(p: string) => Set<string>} [sectionsOf]  numbered sections of another document,
+ *   by repo-root-relative path — lets `[ops §5](ops.md)` resolve against ops.md
  * @returns {string[]} human-readable problems; empty when clean
  */
-export function checkText(relPath, text, fileExists) {
+export function checkText(relPath, text, fileExists, sectionsOf = () => new Set()) {
   const problems = [];
 
   if (text.startsWith("---\n")) {
     problems.push(`${relPath}: leftover Astro frontmatter — plain markdown only`);
   }
 
-  const body = stripFences(text);
+  let body = stripFences(text);
+
+  // `[conventions §4](conventions.md)` — a §N inside a link resolves against the
+  // link's target, not this document. Check it there, then hide it from the local pass.
+  body = body.replace(/\[([^\]]*§\d+[^\]]*)\]\(([^)\s]+)\)/g, (whole, label, target) => {
+    if (/^(https?:|mailto:|#)/.test(target) || target.startsWith("/")) return whole;
+    const [path] = target.split("#");
+    const resolved = relative(ROOT, resolve(ROOT, dirname(relPath), path));
+    const remote = sectionsOf(resolved);
+    for (const m of label.matchAll(/§(\d+)/g)) {
+      if (!remote.has(m[1])) {
+        problems.push(`${relPath}: ${label.trim()} — no "## ${m[1]}." heading in ${resolved}`);
+      }
+    }
+    return `[${label.replace(/§\d+/g, "§")}](${target})`;
+  });
 
   const sections = new Set();
   // "## N. Title" — dot then space. A changelog's "## 1.7 — date" is not a section.
@@ -103,6 +120,11 @@ export function checkManifest(manifest, fileExists) {
     .map((f) => `MANIFEST: "${f}" does not exist`);
 }
 
+/** The `## N.` section numbers a document defines. */
+export function sectionsIn(text) {
+  return new Set([...stripFences(text).matchAll(/^## (\d+)\. /gm)].map((m) => m[1]));
+}
+
 function walk(dir) {
   if (!existsSync(dir)) return [];
   return readdirSync(dir).flatMap((entry) => {
@@ -117,8 +139,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const docs = [...walk(join(ROOT, "standards")), ...walk(join(ROOT, "guides"))];
   const rootDocs = ["README.md", "CHANGELOG.md"].map((f) => join(ROOT, f)).filter(existsSync);
   const exists = (p) => existsSync(join(ROOT, p));
+  const sectionsOf = (p) => (exists(p) ? sectionsIn(readFileSync(join(ROOT, p), "utf8")) : new Set());
   const problems = [...docs, ...rootDocs].flatMap((f) =>
-    checkText(relative(ROOT, f), readFileSync(f, "utf8"), exists),
+    checkText(relative(ROOT, f), readFileSync(f, "utf8"), exists, sectionsOf),
   );
   const versioned = {};
   for (const f of ["package.json", "standards/architecture.md", "README.md", "CHANGELOG.md"]) {
