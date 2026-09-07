@@ -201,12 +201,28 @@ DELETE /api/v1/projects/proj_130
 ### 4.1 Errors
 
 **Every error, at the correct HTTP status, is `{ error: { code, message,
-details?, traceId } }`.** `code` is SCREAMING_SNAKE from the registry in
-`src/shared/errors.ts` (§4.2); `message` is developer-facing, never rendered
-to a user (§7); `details` appears only on `422`, as a flat array. — *Why:*
-one shape lets `api.ts` throw a single `ApiError` class regardless of which
-route failed, and a `code` is what makes a localized, non-generic error
-message possible at all.
+params?, details?, traceId } }`.** `code` is SCREAMING_SNAKE from the registry
+in `src/shared/errors.ts` (§4.2), which also fixes the status the code is
+sent at; `message` is developer-facing, never rendered to a user (§7);
+`params` is a flat object of strings and numbers — the facts the translated
+sentence is about; `details` appears only on `422`, as a flat array. —
+*Why:* one shape lets `api.ts` throw a single `ApiError` class regardless of
+which route failed, and a `code` is what makes a localized, non-generic
+error message possible at all — provided the registry holds a code for the
+*refusal*, not just for the status (§4.2).
+
+```http
+DELETE /api/v1/playlists/pl_42
+409 Conflict
+{
+  "error": {
+    "code": "PLAYLIST_IN_USE",
+    "message": "3 screens still show this playlist.",
+    "params": { "count": 3 },
+    "traceId": "9f2c1e3a-7b1d-4a51-9c3a-9d3b6e2f9a01"
+  }
+}
+```
 
 ```http
 POST /api/v1/projects
@@ -224,16 +240,28 @@ POST /api/v1/projects
 }
 ```
 
-| Status | When |
-|---|---|
-| `400` | the request is malformed below the level schema validation can even parse (bad JSON, wrong content type) |
-| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) |
-| `403` | a `Principal` resolves but lacks the rank or scope the route requires |
-| `404` | the resource doesn't exist, or exists in a tenant this principal can't see ([ops §5](ops.md) — never leak existence across tenants) |
-| `409` | the request conflicts with current state (duplicate, stale write) |
-| `422` | the request is well-formed but fails schema validation — the one status that carries `details` |
-| `429` | rate limit exceeded ([ops §7](ops.md)) |
-| `500` | unhandled — the one status a client never branches on by `code` |
+**`params` carries what has no language: counts, user-entered names, limits,
+identifiers.** `count`, when present, selects the plural form (§7). A value
+from a fixed vocabulary — a role, a state, a tier — is never a param; it
+becomes its own code (§4.2). — *Why:* a translated sentence still has to say
+*which* three screens, and the only alternative is prose in the response,
+which §7 forbids.
+
+| Status | When | Codes |
+|---|---|---|
+| `400` | the request is malformed below the level schema validation can even parse (bad JSON, wrong content type) | `BAD_REQUEST`, or any product code registered at `400` |
+| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) | `UNAUTHORIZED` only |
+| `403` | a `Principal` resolves but lacks the rank or scope the route requires | `FORBIDDEN`, or any product code registered at `403` |
+| `404` | the resource doesn't exist, or exists in a tenant this principal can't see ([ops §5](ops.md) — never leak existence across tenants) | `NOT_FOUND`, or any product code registered at `404` |
+| `409` | the request conflicts with current state (duplicate, stale write, still in use) | `CONFLICT`, or any product code registered at `409` |
+| `422` | the request is well-formed but fails validation — the one status that carries `details` | `VALIDATION_FAILED`, or any product code registered at `422` |
+| `429` | rate limit exceeded ([ops §7](ops.md)) | `RATE_LIMITED` only |
+| `500` | unhandled — the one status a client never branches on by `code` | `INTERNAL` only |
+
+**`401`, `429` and `500` carry exactly one code each.** — *Why:* at each the
+client's reaction is fixed — go sign in, wait, report — so there is nothing
+product-specific to say, and one code per status is what lets the client key
+that reaction on the code rather than on the status (§7).
 
 **`X-Request-Id` is accepted from the client, generated if absent, echoed
 back as `X-Request-Id`, and carried in every error body as `traceId`.** —
