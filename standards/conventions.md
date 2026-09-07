@@ -542,11 +542,17 @@ and query params validate through the same zod v4 layer (§4.2, §5).
 ## 7. i18n
 
 **SPA messages live in `src/client/i18n/{en,zh-TW}.json`** (plus any other
-supported locale), nested keys, with an `errors.<CODE>` namespace mirroring
-`src/shared/errors.ts` (§4.2) key for key. The client renders an error by
-`code` only, never the Worker's `message`. — *Why:* a developer-facing
-`message` in English is exactly what a non-English user should never see; a
-`code` the dictionary already translates is the only safe thing to show.
+supported locale), nested keys, with an `errors.<CODE>` namespace holding
+every code in `src/shared/errors.ts` (§4.2) plus two client-only keys,
+`STALE_CLIENT` and `UNREACHABLE`. **The client renders an error by `code`
+alone, interpolating `params`, and never reads the HTTP status to choose a
+message**: an unknown code renders `STALE_CLIENT`, a response with no
+envelope renders `UNREACHABLE`, and the Worker's `message` is never shown. —
+*Why:* a developer-facing `message` in English is exactly what a non-English
+user should never see; and because the registry is shared and
+`test/shared/errors.test.ts` proves every locale mirrors it, an unknown code
+has exactly one cause — this bundle is older than the Worker — and the right
+message for that is "reload", not a guess shaped by the status.
 
 ```json
 {
@@ -559,8 +565,31 @@ supported locale), nested keys, with an `errors.<CODE>` namespace mirroring
     "CONFLICT": "That already exists.",
     "VALIDATION_FAILED": "Some fields need a second look.",
     "RATE_LIMITED": "Too many attempts — try again shortly.",
-    "INTERNAL": "Something went wrong on our end."
+    "INTERNAL": "Something went wrong on our end.",
+    "SCREEN_ALREADY_CLAIMED": "This screen is already claimed.",
+    "PLAYLIST_IN_USE": "One screen still shows this playlist. | {count} screens still show this playlist.",
+    "MEDIA_NOT_READY": "This media is still uploading.",
+    "FORBIDDEN_FOR_MEMBER": "Members can't do this — ask an admin.",
+    "STALE_CLIENT": "This app has been updated — reload to continue.",
+    "UNREACHABLE": "We couldn't reach the server. Check your connection and try again."
   }
+}
+```
+
+Plural syntax is the framework's (`|` in vue-i18n, `plural` in react-intl);
+what the standard fixes is that `count` is the selector (§4.1).
+
+```ts
+// src/client/lib/errors.ts — the one place a rejection becomes a sentence
+import { ApiError } from "@/api";
+import { t, te } from "@/i18n"; // te: "does this key exist" — vue-i18n's name; a React product aliases its own
+
+export function errorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    const key = `errors.${e.code}`;
+    return te(key) ? t(key, e.params) : t("errors.STALE_CLIENT");
+  }
+  return t("errors.INTERNAL"); // not from the API at all — a bug in this bundle
 }
 ```
 
