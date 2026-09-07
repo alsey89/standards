@@ -2,6 +2,25 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.1 — 2026-09-07
+
+The error registry grows, and one script holds every boundary. **2.1 is additive**: a repo
+at 2.0 conforms as it stands — the eight codes remain valid, `params` is optional, and a
+boundary script keeps its name until the next rule is added. New work follows 2.1.
+
+- `src/shared/errors.ts` is a map of code → HTTP status, seeded with the eight, grown one
+  code per distinct refusal. A code names the refusal, never the route; a fixed-vocabulary
+  value becomes its own code, never a param. `401`, `429`, `500` keep one code each.
+- The envelope gains `params` (flat; `count` selects the plural). The client renders by
+  `code` alone, never by status: an unknown code renders `STALE_CLIENT`, no envelope
+  renders `UNREACHABLE`; `httpStatus` is read only in `api.ts`.
+  `test/shared/errors.test.ts` proves every locale mirrors the registry.
+- `scripts/check-boundaries.mjs` — one table-driven script — replaces
+  `scripts/check-db-boundary.mjs`; the standard ships the seed rows (architecture §13),
+  the product grows the table, a dropped seed row is a recorded deviation.
+- Guards register in `GUARDS`; `allowPublic` is the explicit opt-out;
+  `test/worker/routes.test.ts` fails on any `/api/v1` route that declares neither.
+
 ## 2.0 — 2026-09-06
 
 The four-document set is complete: `architecture` (revised), `conventions` (new), `ops`
