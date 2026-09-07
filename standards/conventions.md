@@ -352,47 +352,84 @@ drifting from what the Worker actually enforces.
 
 ### 4.3 Client boundary
 
-**`src/client/api.ts` is the only file in the SPA that calls `fetch`.** It
-sends `credentials: "same-origin"` (cookies are same-origin only —
+**`src/client/api.ts` is the only file in the SPA that calls `fetch` — and
+the only file that reads an error's `httpStatus`.** It sends
+`credentials: "same-origin"` (cookies are same-origin only —
 [ops §2](ops.md))
 and an `X-Request-Id`, and exposes `get`, `list`, `post`, `patch`, `del`:
 `get`, `post`, `patch` unwrap `item`; `list` returns the list envelope intact
 (it needs `nextCursor`); `del` resolves on 204 — each throwing a typed
 `ApiError` on a non-2xx response. — *Why:* one boundary makes "add a header
 to every request" a one-file change instead of a grep-and-fix across every
-component.
+component; and a component that can read the status is a component that will
+one day choose a message by it, which §7 forbids — so the field is named for
+what it is, and the boundary table ([architecture §13](architecture.md))
+holds the grep.
 
 The Worker throws its own `ApiError` (`src/worker/services/util.ts`,
 [architecture §4](architecture.md)): the same name on the opposite side of the
-wire, sharing only the `code` vocabulary from `src/shared/errors.ts` (§4.2).
+wire, sharing the registry in `src/shared/errors.ts` (§4.2). It takes the
+code, never the status — the registry decides that.
+
+```ts
+// src/worker/services/util.ts
+import { ERRORS, type ErrorCode, type ErrorParams } from "#shared/errors";
+
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(
+    public readonly code: ErrorCode,
+    public readonly opts: { params?: ErrorParams; message?: string; details?: unknown[] } = {},
+  ) {
+    super(opts.message ?? code);
+    this.status = ERRORS[code];
+  }
+}
+
+// in a service:
+throw new ApiError("PLAYLIST_IN_USE", { params: { count: screens.length } });
+```
 
 ```ts
 // src/client/api.ts
-import type { ErrorCode } from "#shared/errors";
+import { APP_PATHS } from "#config/routes";
+import type { ErrorParams } from "#shared/errors";
 
 export class ApiError extends Error {
   constructor(
-    public status: number,
-    public code: ErrorCode,
-    message: string,
+    /** A registry code — or one this bundle predates, which §7 renders as STALE_CLIENT. */
+    public code: string,
+    /** For logs only. Never read outside this file: messages come from `code` (§7). */
+    public httpStatus: number,
     public traceId: string,
+    public params?: ErrorParams,
     public details?: { path: string; code: string; message: string }[],
   ) {
-    super(message);
+    super(code);
   }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const requestId = crypto.randomUUID();
-  const res = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...init.headers },
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...init.headers },
+    });
+  } catch {
+    // fetch rejects only when no response came back at all — offline, DNS, a dropped connection.
+    throw new ApiError("UNREACHABLE", 0, requestId);
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const e = body?.error;
-    throw new ApiError(res.status, e?.code ?? "INTERNAL", e?.message ?? res.statusText, e?.traceId ?? requestId, e?.details);
+    // No envelope means the Worker never answered — a proxy page, a gateway error.
+    if (!e?.code) throw new ApiError("UNREACHABLE", res.status, requestId);
+    // The one reaction keyed on a code rather than rendered from it — and it is the code, not the 401.
+    if (e.code === "UNAUTHORIZED") location.assign(APP_PATHS.signIn);
+    throw new ApiError(e.code, res.status, e.traceId ?? requestId, e.params, e.details);
   }
   return body as T;
 }
