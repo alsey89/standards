@@ -249,8 +249,9 @@ mount point, the catch-all, the error handler and the cron entry is the map a
 reader needs before anything else under `src/worker/` makes sense. It creates one
 `Hono<{ Bindings: Env }>` app, mounts each route module (most specific prefix
 first), defines the catch-all that serves the correct HTML shell (§7),
-registers one central `onError`, exports `{ fetch, scheduled }` (cron work
-wrapped in `ctx.waitUntil`), and re-exports Durable Object classes.
+registers one central `onError`, exports `{ fetch, scheduled }` as the default
+(cron work wrapped in `ctx.waitUntil`) and the composed `app` by name (the
+route-table test walks it, §11), and re-exports Durable Object classes.
 
 **Structural rules:**
 
@@ -273,8 +274,9 @@ wrapped in `ctx.waitUntil`), and re-exports Durable Object classes.
   from the resolved `Principal`.** The D1 binding (`env.DB`, `.prepare(`,
   `drizzle(`) is touched in exactly three places — `src/worker/index.ts`,
   `src/worker/middleware/scope.ts`, and under `src/worker/db/` — and
-  `scripts/check-db-boundary.mjs` enforces exactly that allowlist in
-  `npm run check` (§8, §13). Each route family is injected with the scope it
+  `scripts/check-boundaries.mjs` enforces exactly that allowlist — the first
+  row of the boundary table (§13) — in `npm run check` (§8). Each route
+  family is injected with the scope it
   is entitled to (`global` / `forTenant` / `forTenantAsStaff`); cross-tenant
   access goes only through the distinctly-named `forTenantAsStaff()`, and
   those three names never change whatever the product calls its tenant
@@ -632,7 +634,11 @@ The rules live in [ops §8](ops.md): the runners, the vitest projects, and what 
 must prove before it ships. The structural part is fixed here — tests live in
 `test/{worker,client,shared,e2e}` as `*.test.ts`, never beside the code they
 cover (§2). `npm test` runs the three vitest tiers; the playwright tier runs
-under `npm run test:e2e` and is the one tier CI does not block on (§8).
+under `npm run test:e2e` and is the one tier CI does not block on (§8). Two
+tests are structural and every product carries them: `test/worker/routes.test.ts`
+walks the API route table and fails on any route that declares no guard
+([ops §8](ops.md)); `test/shared/errors.test.ts` fails on any locale that does
+not mirror the error registry ([conventions §4](conventions.md)).
 
 ---
 
@@ -664,7 +670,9 @@ with `""` on the next deploy.
   the scoped accessor injected by their route family's middleware; its tenant
   key comes from a verified credential (§4, §10).
 - `Env` comes from `wrangler types`, never a hand-maintained interface.
-- `api.ts` is the sole client↔API boundary.
+- `api.ts` is the sole client↔API boundary, and the only reader of an error's
+  `httpStatus` ([conventions §4](conventions.md)).
+- Every `/api/v1` route declares who may call it ([ops §2](ops.md)).
 - App route paths are declared once in `config/routes.ts` — never
   hand-mirrored.
 - The site build merges into the app's assets with a collision guard; the site
@@ -677,14 +685,74 @@ with `""` on the next deploy.
 
 | Invariant | Check |
 |---|---|
-| Shared things live by consumer | import-boundary lint: `site/**` never imports `src/shared`; `src/worker/**` never imports DOM globals |
+| Every "lives only in" rule — the boundary table below | `scripts/check-boundaries.mjs` in `check`: one table of `{ pattern, within, allowed }` rows walked over the source tree |
 | `config/` two-consumer rule | count importing files per export across surfaces; fail under 2 |
-| `api.ts` sole boundary | grep for `fetch(` under `src/client` outside `api.ts` |
-| Route paths declared once | grep for app-path literals outside `config/routes.ts` and the router — the count must be zero |
-| Data access only via `db/` | `scripts/check-db-boundary.mjs` — the D1 binding (`env.DB`, `.prepare(`, `drizzle(`) appears only in `src/worker/index.ts`, `src/worker/middleware/scope.ts`, and under `src/worker/db/` |
+| Every API route declares a guard | `test/worker/routes.test.ts` walks the Hono route table ([ops §8](ops.md)) |
+| Every locale mirrors the error registry | `test/shared/errors.test.ts` ([conventions §4](conventions.md)) |
 | `run_worker_first` agrees with `config/routes.ts` | a test compares the derived list with `wrangler.jsonc` (§7) |
 | Formatting | the format check in `check` — one formatter, defaults, no argument |
 | Serving model (§7) | `npm run verify:serving` — status table in the [bootstrap guide](../guides/bootstrap.md) |
+
+**The boundary table.** `scripts/check-boundaries.mjs` holds one row per "X
+lives only in Y" rule this standard makes, and the product adds a row for
+each binding or rule of its own. These are the seed rows:
+
+| Pattern | Within | Allowed in | Rule |
+|---|---|---|---|
+| `env.DB`, `.prepare(`, `drizzle(` | `src/` | `src/worker/index.ts`, `src/worker/middleware/scope.ts`, `src/worker/db/**` | data access only via `db/` ([ops §5](ops.md)) |
+| any other `env.<BINDING>` | `src/` | the one file the product names in its row | every binding has one home |
+| `from "…/db/schema"` | `src/worker/` | `src/worker/db/**` | tables are reached only through accessors ([ops §5](ops.md)) |
+| `fetch(` | `src/client/` | `src/client/api.ts` | one client boundary ([conventions §4](conventions.md)) |
+| `.httpStatus` | `src/client/` | `src/client/api.ts` | messages by code, never by status ([conventions §7](conventions.md)) |
+| a `"/app/…"` literal | `src/client/` | `src/client/router.ts` | paths declared once in `config/routes.ts` ([conventions §2](conventions.md)) |
+| `console.` | `src/worker/` | `src/worker/lib/log.ts` | one logger, `X-Request-Id` on every line ([ops §9](ops.md)) |
+| `window.`, `document.` | `src/worker/` | nowhere | the Worker never touches a DOM global (§4) |
+| `#shared/`, `src/shared` | `site/` | nowhere | shared things live by consumer (§5) |
+
+**A product adds a row when it adds a binding or a rule; a seed row it drops
+is a recorded deviation (§15).** — *Why:* the reason this standard mechanized
+the D1 rule — named places are a fact a script can hold, and anything else is
+a query that escaped the chokepoint — applies to every row; a rule that is
+only prose is a review comment, a rule that is a row is a CI failure. And the
+next binding a product adds gets a boundary for the cost of one line rather
+than a new script.
+
+```js
+// scripts/check-boundaries.mjs — runs in `check`; prints every violation, exits 1 on any
+import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const RULES = [
+  { pattern: /env\.DB\b|\.prepare\(|drizzle\(/, within: "src/", allowed: ["src/worker/index.ts", "src/worker/middleware/scope.ts", "src/worker/db/"], message: "touches the D1 binding outside db/" },
+  { pattern: /from\s+["'][^"']*\/db\/schema["']/, within: "src/worker/", allowed: ["src/worker/db/"], message: "imports schema tables outside db/" },
+  { pattern: /\bfetch\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "calls fetch() outside api.ts" },
+  { pattern: /\.httpStatus\b/, within: "src/client/", allowed: ["src/client/api.ts"], message: "reads an error's HTTP status — render by code" },
+  { pattern: /["'`]\/app(\/|["'`])/, within: "src/client/", allowed: ["src/client/router.ts"], message: "hardcodes an app path — use config/routes.ts" },
+  { pattern: /\bconsole\./, within: "src/worker/", allowed: ["src/worker/lib/log.ts"], message: "logs outside lib/log.ts" },
+  { pattern: /\b(window|document)\./, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker" },
+  { pattern: /#shared\/|src\/shared/, within: "site/", allowed: [], message: "the site imports src/shared" },
+];
+
+const EXTENSIONS = [".ts", ".tsx", ".vue", ".astro"];
+function* walk(dir) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) { if (entry.name !== "node_modules" && entry.name !== "dist") yield* walk(path); }
+    else if (EXTENSIONS.some((ext) => entry.name.endsWith(ext))) yield path;
+  }
+}
+
+const failures = [];
+for (const rule of RULES) {
+  if (!existsSync(rule.within)) continue;
+  for (const file of walk(rule.within)) {
+    if (rule.allowed.some((a) => file === a || (a.endsWith("/") && file.startsWith(a)))) continue;
+    if (rule.pattern.test(readFileSync(file, "utf8"))) failures.push(`${file}: ${rule.message}`);
+  }
+}
+if (failures.length) { console.error(failures.join("\n")); process.exit(1); }
+console.log(`✓ boundaries: ${RULES.length} rules clean`);
+```
 
 What changes per product: the domain and `wrangler` name, the `Env` bindings
 and DB name, the route modules and service/db domains, the `config/` values
