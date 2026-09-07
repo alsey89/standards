@@ -729,7 +729,7 @@ const RULES = [
   { pattern: /\.httpStatus\b/, within: "src/client/", allowed: ["src/client/api.ts"], message: "reads an error's HTTP status — render by code" },
   { pattern: /["'`]\/app(\/|["'`])/, within: "src/client/", allowed: ["src/client/router.ts"], message: "hardcodes an app path — use config/routes.ts" },
   { pattern: /\bconsole\./, within: "src/worker/", allowed: ["src/worker/lib/log.ts"], message: "logs outside lib/log.ts" },
-  { pattern: /\b(window|document)\./, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker" },
+  { pattern: /\b(window|document)\.\w/, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker" },
   { pattern: /#shared\/|src\/shared/, within: "site/", allowed: [], message: "the site imports src/shared" },
 ];
 

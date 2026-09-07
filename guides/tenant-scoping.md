@@ -148,8 +148,9 @@ Notes per family:
 From [architecture §13](../standards/architecture.md) and
 [ops §5](../standards/ops.md):
 
-- **Enforced by `scripts/check-db-boundary.mjs` in `npm run check`:** the D1
-  binding — `env.DB`, `.prepare(`, `drizzle(` — appears only in
+- **Enforced by `scripts/check-boundaries.mjs` in `npm run check` — the first
+  row of the boundary table ([architecture §13](../standards/architecture.md)):**
+  the D1 binding — `env.DB`, `.prepare(`, `drizzle(` — appears only in
   `src/worker/index.ts`, `src/worker/middleware/scope.ts`, and under
   `src/worker/db/`. Every route, service and `lib/` module receives the
   accessor (or a `D1Database`) as a parameter instead.
