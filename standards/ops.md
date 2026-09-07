@@ -81,6 +81,8 @@ the product on sight, in a support ticket or a log line, with no lookup needed.
 
 ```ts
 // src/worker/middleware/principal.ts — Variables: { principal?: Principal }
+import type { MiddlewareHandler } from "hono";
+
 export const resolvePrincipal = createMiddleware(async (c, next) => {
   const principal =
     (await fromSessionCookie(c)) ?? (await fromBearerKey(c)) ?? (await fromIntegrationToken(c));
@@ -88,26 +90,41 @@ export const resolvePrincipal = createMiddleware(async (c, next) => {
   await next();
 });
 
-export const requireAuth = createMiddleware(async (c, next) => {
-  if (!c.var.principal) throw new ApiError(401, "UNAUTHORIZED");
-  await next();
-});
+// Every guard registers the middleware it returns, so test/worker/routes.test.ts
+// (§8) can walk the route table and prove each route composed one.
+export const GUARDS = new WeakSet<MiddlewareHandler>();
+const guard = <H extends MiddlewareHandler>(h: H): H => (GUARDS.add(h), h);
 
-export const requireRank = (min: string) => createMiddleware(async (c, next) => {
-  if (!outranks(c.var.principal?.rank, min)) throw new ApiError(403, "FORBIDDEN");
+export const requireAuth = guard(createMiddleware(async (c, next) => {
+  if (!c.var.principal) throw new ApiError("UNAUTHORIZED");
   await next();
-});
+}));
 
-export const requireScope = (scope: string) => createMiddleware(async (c, next) => {
-  if (!c.var.principal?.scopes.includes(scope)) throw new ApiError(403, "FORBIDDEN");
+export const requireRank = (min: string) => guard(createMiddleware(async (c, next) => {
+  if (!outranks(c.var.principal?.rank, min)) throw new ApiError("FORBIDDEN");
   await next();
-});
+}));
+
+export const requireScope = (scope: string) => guard(createMiddleware(async (c, next) => {
+  if (!c.var.principal?.scopes.includes(scope)) throw new ApiError("FORBIDDEN");
+  await next();
+}));
+
+/** The explicit opt-out: a public route says so, in the same place a guarded one names its guard. */
+export const allowPublic = guard(createMiddleware(async (_c, next) => next()));
 ```
 
 **A route handler never inspects `principal.kind`.** It composes `requireAuth`,
 `requireRank(min)`, or `requireScope(name)` and reads `c.var.principal` for the id it
 needs. — *Why:* a route that branches on "is this a session or a key" turns one
 credential system into three parallel auth paths that drift apart.
+
+**Every `/api/v1` route composes at least one of `requireAuth`, `requireRank(min)`,
+`requireScope(name)`, `allowPublic` — per route, not only at the family mount — and
+`test/worker/routes.test.ts` (§8) fails on any route that composes none.** — *Why:* a
+guard registered in a set is a fact a test can hold; "every route has a guard" as prose is
+a review comment that one copy-pasted route defeats. Default-deny becomes a property the
+suite proves rather than a habit reviewers keep.
 
 **Every guarded route has a test that proves the guard fires** (§8). — *Why:* a
 middleware dropped from a copy-pasted route reads as correct code and fails only at
@@ -273,7 +290,7 @@ import type { Db } from "./client";        // the drizzle client, built once fro
 import { users, widgets } from "./schema";
 import type { Principal } from "#shared/types/principal";
 import { RANK } from "#shared/types/principal";
-import { ApiError } from "../lib/errors";
+import { ApiError } from "../services/util";
 
 export function forTenant(db: Db, tenantId: string) {
   return {
@@ -288,7 +305,7 @@ export function forTenant(db: Db, tenantId: string) {
 // is the complete cross-tenant audit list. It authorizes before it scopes.
 export function forTenantAsStaff(db: Db, staff: Principal, tenantId: string) {
   if (staff.kind !== "session" || (staff.rank ?? 0) < RANK.staff) {
-    throw new ApiError(403, "FORBIDDEN");
+    throw new ApiError("FORBIDDEN");
   }
   return forTenant(db, tenantId);
 }
@@ -334,7 +351,8 @@ places: `src/worker/index.ts`, `src/worker/middleware/scope.ts`, and anything un
 `src/worker/db/`.** Every other file — routes, services, `lib/` — takes the accessor (or
 the drizzle client `db/client.ts` builds from the binding) as a parameter and never
 reads it off `Env`.
-`scripts/check-db-boundary.mjs` enforces exactly that allowlist and runs in `check`. —
+`scripts/check-boundaries.mjs` enforces exactly that allowlist — the first row of the
+boundary table ([architecture §13](architecture.md)) — and runs in `check`. —
 *Why:* `index.ts` needs the binding once, for `scheduled()` — cron has no request and no
 middleware to construct an accessor, so the handler builds `forTenant(env.DB, tenantId)`
 directly per tenant; every request-scoped path gets its accessor from
@@ -465,10 +483,35 @@ what a mock can't
 reproduce, but `wrangler dev` startup flakiness shouldn't gate every PR before the suite
 has earned trust.
 
-**Every route that isn't in the public scope declares a guard, and a worker test asserts
-the unguarded call is rejected.** — *Why:* a guard that regresses silently — a
-copy-pasted route missing its middleware — is invisible in review and caught only by a
-request-level test.
+**Every `/api/v1` route declares who may call it (§2.2); `test/worker/routes.test.ts`
+walks the route table and fails on any route that declares nothing; and each guarded
+route also has a test that the unguarded call is rejected.** — *Why:* a guard that
+regresses silently — a copy-pasted route missing its middleware — is invisible in review;
+the table walk catches the missing declaration before any request is made, and the
+request-level test catches a guard that is declared but wrong.
+
+```ts
+// test/worker/routes.test.ts
+import { describe, expect, it } from "vitest";
+import { API_BASE } from "#config/routes";
+import { app } from "#worker/index";                       // the composed Hono app (architecture §4)
+import { GUARDS } from "#worker/middleware/principal";
+
+describe("the API route table", () => {
+  it("declares who may call every route", () => {
+    const declared = new Map<string, boolean>();
+    for (const r of app.routes) {
+      if (r.method === "ALL") continue;                    // a family's use() — middleware, not a route
+      if (!r.path.startsWith(API_BASE)) continue;          // the asset catch-all and /api/health
+      const key = `${r.method} ${r.path}`;
+      declared.set(key, (declared.get(key) ?? false) || GUARDS.has(r.handler));
+    }
+    const undeclared = [...declared].filter(([, ok]) => !ok).map(([key]) => key);
+    expect(undeclared).toEqual([]);
+    expect(declared.size).toBeGreaterThan(0);              // an empty table would pass vacuously
+  });
+});
+```
 
 ## 9. CI and deploy
 
