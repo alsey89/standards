@@ -272,26 +272,78 @@ id at all: it looks like observability while contributing none.
 
 ### 4.2 The error-code registry
 
-**`src/shared/errors.ts` is the sole registry of error codes**, imported by
-the Worker (to throw them) and the client (to render them, §7). A code used
-anywhere that isn't listed here is a bug, not a new code. — *Why:* the client
-renders errors by `code` alone, so a code the shared registry has never heard
-of reaches the user as a blank message rather than as a translation.
+**`src/shared/errors.ts` is the sole registry of error codes — a map of code
+to HTTP status, seeded with the eight below and grown by the product, one
+code per distinct refusal it can make.** The Worker imports it to throw
+(§4.3), the client to render (§7). A code used anywhere that isn't in the
+map is a typecheck failure, not a new code. — *Why:* the client renders by
+`code` alone, so a code the registry has never heard of would reach the user
+as a blank; and a status beside each code means the status of a refusal is
+decided once, here, where no route can disagree with another.
 
 ```ts
 // src/shared/errors.ts
-export const ERROR_CODES = [
-  "BAD_REQUEST",
-  "UNAUTHORIZED",
-  "FORBIDDEN",
-  "NOT_FOUND",
-  "CONFLICT",
-  "VALIDATION_FAILED",
-  "RATE_LIMITED",
-  "INTERNAL",
-] as const;
+export const ERRORS = {
+  // The starting set — one per status the API uses (§4.1). Thrown when the
+  // product has nothing more specific to say. UNAUTHORIZED, RATE_LIMITED and
+  // INTERNAL are the only codes ever registered at their status.
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  CONFLICT: 409,
+  VALIDATION_FAILED: 422,
+  RATE_LIMITED: 429,
+  INTERNAL: 500,
+  // The product's own refusals — one per distinct reason, named for the
+  // refusal, never for the route that raised it.
+  SCREEN_ALREADY_CLAIMED: 409,
+  PLAYLIST_IN_USE: 409,
+  MEDIA_NOT_READY: 409,
+  FORBIDDEN_FOR_MEMBER: 403,
+} as const;
 
-export type ErrorCode = (typeof ERROR_CODES)[number];
+export type ErrorCode = keyof typeof ERRORS;
+export type ErrorParams = Record<string, string | number>;
+```
+
+**A code names the refusal — not the route that raised it, not the status.**
+— *Why:* `PLAYLIST_IN_USE` is thrown by whichever route deletes a playlist
+that is still assigned and translated once; `DELETE_PLAYLIST_CONFLICT` would
+be translated once per route, and `CONFLICT` says nothing a `409` didn't.
+
+**A value from a fixed vocabulary becomes its own code, never a `params`
+value.** `FORBIDDEN_FOR_MEMBER`, not `FORBIDDEN` with `{ role: "member" }`.
+— *Why:* the wire value is an enum a translation cannot render — an English
+word inside a Japanese sentence, next to a menu that spells the same role
+管理者 — and a language that inflects around the noun cannot write the
+sentence at all. `params` carries what has no language: counts,
+user-entered names, limits, identifiers (§4.1).
+
+**`test/shared/errors.test.ts` proves that every supported locale's
+`errors` namespace (§7) holds exactly the registry's codes plus the two
+client-only keys `STALE_CLIENT` and `UNREACHABLE` — no missing entry, no
+orphan key.** — *Why:* the dictionaries are JSON, which the typechecker
+cannot hold against a TypeScript map; a test is what turns "mirrors the
+registry" from a sentence into a CI failure.
+
+```ts
+// test/shared/errors.test.ts
+import { describe, expect, it } from "vitest";
+import { ERRORS } from "#shared/errors";
+import { BRAND } from "#config/brand";
+import en from "@/i18n/en.json";
+import zhTW from "@/i18n/zh-TW.json";
+
+const CLIENT_ONLY = ["STALE_CLIENT", "UNREACHABLE"];
+const dictionaries: Record<string, { errors: Record<string, string> }> = { en, "zh-TW": zhTW };
+
+describe("the error dictionary", () => {
+  it.each(BRAND.locales.supported)("mirrors the registry in %s", (locale) => {
+    const expected = [...Object.keys(ERRORS), ...CLIENT_ONLY].sort();
+    expect(Object.keys(dictionaries[locale].errors).sort()).toEqual(expected);
+  });
+});
 ```
 
 **Request and response shapes validate with zod v4 in `src/shared/validators/`, consumed by both Worker routes and client forms.** — *Why:* a
