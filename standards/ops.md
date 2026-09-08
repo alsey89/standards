@@ -126,6 +126,18 @@ guard registered in a set is a fact a test can hold; "every route has a guard" a
 a review comment that one copy-pasted route defeats. Default-deny becomes a property the
 suite proves rather than a habit reviewers keep.
 
+**An authenticated route family also mounts `requireAuth` at its prefix, before it mounts
+any route** — `family.use("*", requireAuth)` ahead of every `family.route(...)` — so an
+anonymous request to a path under that prefix is `401` whether or not the path exists.
+The per-route guard above stays: the mount authenticates, the route authorizes. — *Why:*
+a family-wide mount is the one guard no route author can forget, because it is not
+written per route; it fails closed for a path that was never registered, which is exactly
+the case a per-route rule cannot cover. The cost is that an anonymous caller cannot tell a
+real route from a fake one under that prefix — which is not a secret worth protecting (a
+SPA ships its own route list in its bundle) and not a loss worth taking a hole for: the
+only callers who see it are a typo'd `curl` and a stale bundle, both of which were headed
+for sign-in anyway, and both of which get an honest `404` once authenticated.
+
 **Every guarded route has a test that proves the guard fires** (§8). — *Why:* a
 middleware dropped from a copy-pasted route reads as correct code and fails only at
 request time, which is the one place a test can still catch it before a user does.
