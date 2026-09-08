@@ -5,7 +5,7 @@ one deploy, one domain — serving three surfaces**: the SPA, the Worker (the
 JSON API), and the site. The three share a typed product config, one set of
 design tokens, and an internal app contract.
 
-**Standard version: 2.1** — changelog in [CHANGELOG.md](../CHANGELOG.md).
+**Standard version: 2.2** — changelog in [CHANGELOG.md](../CHANGELOG.md).
 
 This document is **normative**: it fixes the stack, the top-level layout, how
 the three surfaces share code, and how one Worker serves and builds them.

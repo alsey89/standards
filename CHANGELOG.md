@@ -2,6 +2,20 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.2 — 2026-09-08
+
+One rule: an authenticated route family mounts `requireAuth` at its prefix, before it
+mounts any route, in addition to the per-route guard 2.1 added (ops §2). An anonymous
+request to a path under that prefix is then `401` whether or not the path exists.
+**Retroactive in the weak sense**: a repo whose families authenticate per route only is
+conforming today and records the gap; a repo that already mounts at the prefix — the
+reason this rule exists — stops recording it as a deviation.
+
+- The mount authenticates, the route authorizes. Neither replaces the other: the mount is
+  the guard no route author can forget, the per-route guard is the one a test can prove.
+- A `401` for a path that does not exist is the intended behaviour, not a bug to route
+  around. A route table is not a secret; a hole that opens when someone forgets a guard is.
+
 ## 2.1 — 2026-09-07
 
 The error registry grows, and one script holds every boundary. **2.1 is additive**: a repo
