@@ -320,15 +320,24 @@ word inside a Japanese sentence, next to a menu that spells the same role
 sentence at all. `params` carries what has no language: counts,
 user-entered names, limits, identifiers (§4.1).
 
-**`test/shared/errors.test.ts` proves that every supported locale's
+**`test/client/errors.test.ts` proves that every supported locale's
 `errors` namespace (§7) holds exactly the registry's codes plus the two
 client-only keys `STALE_CLIENT` and `UNREACHABLE` — no missing entry, no
 orphan key.** — *Why:* the dictionaries are JSON, which the typechecker
 cannot hold against a TypeScript map; a test is what turns "mirrors the
 registry" from a sentence into a CI failure.
 
+**It belongs to the client tier, not the shared one, even though half of what
+it checks is shared.** — *Why:* it reads the dictionaries, which live under
+`src/client/i18n/` (§7) behind the `@/*` alias that
+[architecture §9](architecture.md) gives to the app alone; the shared tier is
+defined as the one that does not know the client exists, so the alias does not
+resolve there and the test would not run as written. A test spanning two tiers
+lives in the *narrower* one — the client can import `#shared`, but never the
+other way round.
+
 ```ts
-// test/shared/errors.test.ts
+// test/client/errors.test.ts
 import { describe, expect, it } from "vitest";
 import { ERRORS } from "#shared/errors";
 import { BRAND } from "#config/brand";
@@ -550,7 +559,7 @@ message**: an unknown code renders `STALE_CLIENT`, a response with no
 envelope renders `UNREACHABLE`, and the Worker's `message` is never shown. —
 *Why:* a developer-facing `message` in English is exactly what a non-English
 user should never see; and because the registry is shared and
-`test/shared/errors.test.ts` proves every locale mirrors it, an unknown code
+`test/client/errors.test.ts` proves every locale mirrors it, an unknown code
 has exactly one cause — this bundle is older than the Worker — and the right
 message for that is "reload", not a guess shaped by the status.
 

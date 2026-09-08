@@ -2,6 +2,21 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.3 — 2026-09-08
+
+Two fixes to what 2.1 shipped, both found by a product repo adopting it. **Neither is a
+rule change**: the rules stand, the examples that implement them were wrong.
+
+- **The boundary script tests code, not prose** (architecture §13). It scans raw file text,
+  so every comment mentioning a pattern tripped its row. Measured against a real repo, the
+  app-path row flagged 22 files of which 20 were docblocks, and the rational response to
+  twenty false failures is to delete the row. The script now blanks block, template and
+  line comments before matching, and reports `file:line` instead of `file`.
+- **The dictionary parity test moves to `test/client/errors.test.ts`** (conventions §4,
+  architecture §11, §13). It reads the dictionaries through the `@/*` alias, which
+  architecture §9 gives to the app alone, so it never resolved in the shared tier. A test
+  spanning two tiers belongs to the narrower one.
+
 ## 2.2 — 2026-09-08
 
 One rule: an authenticated route family mounts `requireAuth` at its prefix, before it
