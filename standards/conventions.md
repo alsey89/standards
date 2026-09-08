@@ -28,10 +28,14 @@ where it's just noise a router would otherwise have to special-case.
 
 ### 2.1 `config/routes.ts`
 
-**`config/routes.ts` exports exactly six names:** `APP_BASE`, `APP_PATHS`,
-`PUBLIC_PREFIXES`, `API_BASE`, `isAppPath()`, `fillPath()`. Nothing else, and
-nothing less. — *Why:* six fixed names is what lets an agent open a repo it
-has never seen and know the one file to grep for every path in the product.
+**`config/routes.ts` exports at least these six names:** `APP_BASE`, `APP_PATHS`,
+`PUBLIC_PREFIXES`, `API_BASE`, `isAppPath()`, `fillPath()`. Anything it adds is
+a pure function over the same data — a matcher, a builder — never a further
+constant. — *Why:* six fixed names is what lets an agent open a repo it has
+never seen and know the one file to grep for every path in the product; a
+seventh function that reads `APP_PATHS` keeps that true, and a seventh constant
+is a path declared somewhere other than `APP_PATHS`, which is what the file
+exists to prevent.
 
 ```ts
 // config/routes.ts — the single declaration of every app path. The Worker's
@@ -65,10 +69,16 @@ export const PUBLIC_PREFIXES = ["/tours"] as const;
 
 export const API_BASE = "/api/v1";
 
-/** True for a real app path, or one trailing-slash off — both 200 into the shell. */
+// One matcher per declared path: a `:param` matches one segment, a trailing `/*` matches
+// the rest. Nothing under /app that is not declared here reaches the shell.
+const APP_MATCHERS = Object.values(APP_PATHS).map(
+  (path) => new RegExp(`^${path.replace(/:[a-zA-Z]+/g, "[^/]+").replace(/\/\*$/, "(?:/.*)?")}$`),
+);
+
+/** True for a declared app path, params filled, or one trailing-slash off — both 200 into the shell. */
 export function isAppPath(pathname: string): boolean {
   const p = pathname.length > 1 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
-  return p === APP_BASE || p.startsWith(APP_BASE + "/");
+  return APP_MATCHERS.some((re) => re.test(p));
 }
 
 /** Fills named params into an APP_PATHS entry: fillPath(APP_PATHS.project, { projectId: "abc" }). */
@@ -80,6 +90,18 @@ export function fillPath(path: string, params: Record<string, string>): string {
   });
 }
 ```
+
+**`isAppPath()` matches a declared path exactly, params filled — never the `/app`
+prefix.** An undeclared path under `/app` is a `404` at the Worker, not a `200`
+shell the client router then fails to route. A genuinely open-ended app path —
+a docs tree, a file browser — is declared with a trailing `/*`, and that one
+entry matches as a prefix. — *Why:* the payoff of the serving model
+([architecture §7](architecture.md)) is that a garbage URL gets a real status,
+and a prefix match gives that up for exactly the URLs a product is most likely
+to break — a stale deep link to a renamed page — which then logs `200` on every
+hit while the reader sees a client-side dead end. Exact match also makes the
+declaration enforceable: a route the SPA router knows and `APP_PATHS` does not
+is a `404` in the first `verify:serving` run, not a drift found later.
 
 **Zero app-path literals outside this file and the router.** Every link,
 redirect, and email template builds its URL from `APP_PATHS` + `fillPath()`;
@@ -257,10 +279,16 @@ which §7 forbids.
 | `422` | the request is well-formed but fails validation — the one status that carries `details` | `VALIDATION_FAILED`, or any product code registered at `422` |
 | `429` | rate limit exceeded ([ops §7](ops.md)) | `RATE_LIMITED`, or any product code registered at `429` |
 | `500` | unhandled — the one status a client never branches on by `code` | `INTERNAL` only |
+| `502`, `503`, `504` | a dependency the product can name failed under a sound request — an upstream API, the database, the email provider | any product code registered there, e.g. `UPSTREAM_TIMEOUT` at `504` |
 
-**`500` carries exactly one code.** — *Why:* an unhandled error has nothing to
-say by definition; anything the product can actually name is a refusal it
-handled, and a handled refusal belongs at a `4xx` with a code of its own.
+**`500` carries exactly one code, and a failure the product can name is not a
+`500`.** — *Why:* an unhandled error has nothing to say by definition. What the
+product *can* name is one of two things: a refusal it handled, which belongs at
+a `4xx`, or a dependency that failed under it — an upstream timeout, a database
+that would not answer — which is neither the client's fault nor unknown, and
+belongs at `502`–`504` with a code of its own. Naming those gives the log and
+the dashboard a stable label without asking the client to branch on `500`,
+which stays the one status that means *we do not know*.
 
 **Every other status is open, `401` and `429` included.** A caller who was
 never signed in and one whose session was revoked by a password change
@@ -271,12 +299,17 @@ everywhere". — *Why:* the reaction being fixed is a weaker claim than the
 carries one code recreates, one status over, exactly the flattening §4.2
 exists to end.
 
-**`X-Request-Id` is accepted from the client, generated if absent, echoed
-back as `X-Request-Id`, and carried in every error body as `traceId`.** —
-*Why:* fixing the exact casing here forecloses the `traceId`/`traceID`
-mismatch — one file emits one spelling, another reads the other, and the
-field is silently `undefined` forever, which is worse than having no trace
-id at all: it looks like observability while contributing none.
+**`X-Request-Id` is accepted from the client when it matches
+`^[A-Za-z0-9_-]{1,64}$`, generated otherwise, echoed back as `X-Request-Id`,
+and carried in every error body as `traceId`.** A value that fails the match
+is dropped and replaced, never logged. — *Why:* fixing the exact casing here
+forecloses the `traceId`/`traceID` mismatch — one file emits one spelling,
+another reads the other, and the field is silently `undefined` forever, which
+is worse than having no trace id at all: it looks like observability while
+contributing none. And an id the Worker writes into every log line and reflects
+in a response header is one it has to own the shape of: unvalidated, whatever
+the client sent lands in the log search and comes back in the response, and the
+replacement costs one regex. A UUID, which `api.ts` sends (§4.3), passes.
 
 ### 4.2 The error-code registry
 
@@ -337,12 +370,17 @@ word inside a Japanese sentence, next to a menu that spells the same role
 sentence at all. `params` carries what has no language: counts,
 user-entered names, limits, identifiers (§4.1).
 
-**`test/client/errors.test.ts` proves that every supported locale's
-`errors` namespace (§7) holds exactly the registry's codes plus the two
-client-only keys `STALE_CLIENT` and `UNREACHABLE` — no missing entry, no
-orphan key.** — *Why:* the dictionaries are JSON, which the typechecker
-cannot hold against a TypeScript map; a test is what turns "mirrors the
-registry" from a sentence into a CI failure.
+**Every supported locale's `errors` namespace (§7) `satisfies
+Record<ErrorCode | ClientOnlyCode, string>`, so a missing code and an orphan
+key are both typecheck failures, in every locale, against the one registry.
+`test/client/errors.test.ts` then proves what a type cannot: no sentence is
+empty.** — *Why:* `satisfies` on an object literal checks both directions — a
+key the union lacks is an excess property, a key the literal lacks is a
+missing one — and every locale file is checked against the same union, so
+cross-locale agreement is compile-time too. The earlier framing, that the
+dictionaries are JSON and so invisible to the typechecker, hid that the
+stronger tool exists; what a type cannot see is the content of a string, and
+that is all the test has left to hold.
 
 **It belongs to the client tier, not the shared one, even though half of what
 it checks is shared.** — *Why:* it reads the dictionaries, which live under
@@ -354,20 +392,16 @@ lives in the *narrower* one — the client can import `#shared`, but never the
 other way round.
 
 ```ts
-// test/client/errors.test.ts
+// test/client/errors.test.ts — the keys are the typechecker's (§7); this holds the strings
 import { describe, expect, it } from "vitest";
-import { ERRORS } from "#shared/errors";
 import { BRAND } from "#config/brand";
-import en from "@/i18n/en.json";
-import zhTW from "@/i18n/zh-TW.json";
-
-const CLIENT_ONLY = ["STALE_CLIENT", "UNREACHABLE"];
-const dictionaries: Record<string, { errors: Record<string, string> }> = { en, "zh-TW": zhTW };
+import { dictionaries } from "@/i18n";
 
 describe("the error dictionary", () => {
-  it.each(BRAND.locales.supported)("mirrors the registry in %s", (locale) => {
-    const expected = [...Object.keys(ERRORS), ...CLIENT_ONLY].sort();
-    expect(Object.keys(dictionaries[locale].errors).sort()).toEqual(expected);
+  it.each(BRAND.locales.supported)("has a sentence for every code in %s", (locale) => {
+    for (const [code, sentence] of Object.entries(dictionaries[locale].errors)) {
+      expect(sentence.trim(), `${locale} errors.${code}`).not.toBe("");
+    }
   });
 });
 ```
@@ -579,41 +613,48 @@ and query params validate through the same zod v4 layer (§4.2, §5).
 
 ## 7. i18n
 
-**SPA messages live in `src/client/i18n/{en,zh-TW}.json`** (plus any other
-supported locale), nested keys, with an `errors.<CODE>` namespace holding
-every code in `src/shared/errors.ts` (§4.2) plus two client-only keys,
-`STALE_CLIENT` and `UNREACHABLE`. **The client renders an error by `code`
-alone, interpolating `params`, and never reads the HTTP status to choose a
-message**: an unknown code renders `STALE_CLIENT`, a response with no
-envelope renders `UNREACHABLE`, and the Worker's `message` is never shown. —
-*Why:* a developer-facing `message` in English is exactly what a non-English
-user should never see; and because the registry is shared and
-`test/client/errors.test.ts` proves every locale mirrors it, an unknown code
-has exactly one cause — this bundle is older than the Worker — and the right
+**SPA messages live in `src/client/i18n/{en,zh-TW}.ts`** (plus any other
+supported locale), one typed object per locale, nested keys, with an `errors`
+namespace that `satisfies Record<ErrorCode | ClientOnlyCode, string>` — every
+code in `src/shared/errors.ts` (§4.2) plus the two client-only keys,
+`STALE_CLIENT` and `UNREACHABLE`. A dictionary kept as JSON because a
+translation platform consumes it is a recorded deviation (§9), and
+`test/client/errors.test.ts` then carries the key check the type would have.
+**The client renders an error by `code` alone, interpolating `params`, and
+never reads the HTTP status to choose a message**: an unknown code renders
+`STALE_CLIENT`, a response with no envelope renders `UNREACHABLE`, and the
+Worker's `message` is never shown. — *Why:* a developer-facing `message` in
+English is exactly what a non-English user should never see; and because the
+registry is shared and every dictionary `satisfies` it, an unknown code has
+exactly one cause — this bundle is older than the Worker — and the right
 message for that is "reload", not a guess shaped by the status.
 
-```json
-{
-  "nav": { "projects": "Projects", "settings": "Settings" },
-  "errors": {
-    "BAD_REQUEST": "That request didn't make sense to us.",
-    "UNAUTHORIZED": "Sign in to continue.",
-    "SESSION_EXPIRED": "You were signed out after a while away. Sign in to pick up where you left off.",
-    "SESSION_REVOKED": "Your password changed, so you were signed out everywhere. Sign in again.",
-    "FORBIDDEN": "You don't have access to this.",
-    "NOT_FOUND": "We couldn't find that.",
-    "CONFLICT": "That already exists.",
-    "VALIDATION_FAILED": "Some fields need a second look.",
-    "RATE_LIMITED": "Too many attempts — try again shortly.",
-    "INTERNAL": "Something went wrong on our end.",
-    "SCREEN_ALREADY_CLAIMED": "This screen is already claimed.",
-    "PLAYLIST_IN_USE": "One screen still shows this playlist. | {count} screens still show this playlist.",
-    "MEDIA_NOT_READY": "This media is still uploading.",
-    "FORBIDDEN_FOR_MEMBER": "Members can't do this — ask an admin.",
-    "STALE_CLIENT": "This app has been updated — reload to continue.",
-    "UNREACHABLE": "We couldn't reach the server. Check your connection and try again."
-  }
-}
+```ts
+// src/client/i18n/en.ts
+import type { ErrorCode } from "#shared/errors";
+import type { ClientOnlyCode } from "@/lib/errors";
+
+export default {
+  nav: { projects: "Projects", settings: "Settings" },
+  errors: {
+    BAD_REQUEST: "That request didn't make sense to us.",
+    UNAUTHORIZED: "Sign in to continue.",
+    SESSION_EXPIRED: "You were signed out after a while away. Sign in to pick up where you left off.",
+    SESSION_REVOKED: "Your password changed, so you were signed out everywhere. Sign in again.",
+    FORBIDDEN: "You don't have access to this.",
+    NOT_FOUND: "We couldn't find that.",
+    CONFLICT: "That already exists.",
+    VALIDATION_FAILED: "Some fields need a second look.",
+    RATE_LIMITED: "Too many attempts — try again shortly.",
+    INTERNAL: "Something went wrong on our end.",
+    SCREEN_ALREADY_CLAIMED: "This screen is already claimed.",
+    PLAYLIST_IN_USE: "One screen still shows this playlist. | {count} screens still show this playlist.",
+    MEDIA_NOT_READY: "This media is still uploading.",
+    FORBIDDEN_FOR_MEMBER: "Members can't do this — ask an admin.",
+    STALE_CLIENT: "This app has been updated — reload to continue.",
+    UNREACHABLE: "We couldn't reach the server. Check your connection and try again.",
+  } satisfies Record<ErrorCode | ClientOnlyCode, string>,
+};
 ```
 
 Plural syntax is the framework's (`|` in vue-i18n, `plural` in react-intl);
@@ -623,6 +664,9 @@ what the standard fixes is that `count` is the selector (§4.1).
 // src/client/lib/errors.ts — the one place a rejection becomes a sentence
 import { ApiError } from "@/api";
 import { t, te } from "@/i18n"; // te: "does this key exist" — vue-i18n's name; a React product aliases its own
+
+/** Codes the Worker never sends; every dictionary carries them beside the registry's (§4.2). */
+export type ClientOnlyCode = "STALE_CLIENT" | "UNREACHABLE";
 
 export function errorMessage(e: unknown): string {
   if (e instanceof ApiError) {

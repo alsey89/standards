@@ -123,17 +123,52 @@ requires the revocation, so the client can either explain it or leave the reader
 wondering why they were signed out; distinguishing costs one branch at the place the
 session was looked up anyway.
 
-**A route handler never inspects `principal.kind`.** It composes `requireAuth`,
-`requireRank(min)`, or `requireScope(name)` and reads `c.var.principal` for the id it
-needs. — *Why:* a route that branches on "is this a session or a key" turns one
-credential system into three parallel auth paths that drift apart.
+**A route handler never inspects `principal.kind`.** It composes a guard, or is named in
+the authorization map (below), and reads `c.var.principal` for the id it needs. — *Why:*
+a route that branches on "is this a session or a key" turns one credential system into
+three parallel auth paths that drift apart.
 
-**Every `/api/v1` route composes at least one of `requireAuth`, `requireRank(min)`,
-`requireScope(name)`, `allowPublic` — per route, not only at the family mount — and
-`test/worker/routes.test.ts` (§8) fails on any route that composes none.** — *Why:* a
-guard registered in a set is a fact a test can hold; "every route has a guard" as prose is
-a review comment that one copy-pasted route defeats. Default-deny becomes a property the
-suite proves rather than a habit reviewers keep.
+**Every `/api/v1` route declares who may call it, and a route that declares nothing fails
+closed.** Two mechanisms conform. The first is the guards above: each route composes at
+least one of `requireAuth`, `requireRank(min)`, `requireScope(name)`, `allowPublic` — per
+route, not only at the family mount — and `test/worker/routes.test.ts` (§8) fails on any
+route that composes none. The second, and the stronger, is one authorization map — a
+`"METHOD /path"` to requirement table in a single file — read by one middleware that
+answers `403` for any route the map does not name; the same table walk (§8) fails on a
+route with no entry, and the map doubles as the document of who may do what. A product
+with more than a handful of roles, or a permission model richer than a linear rank, takes
+the map. — *Why:* a guard registered in a set is a fact a test can hold, which is what
+makes default-deny a property the suite proves rather than a habit reviewers keep. But a
+test holds only between runs: a route written without its guard is open to every
+authenticated caller from the moment it is mounted until the suite next fails, and a
+guard that is absent cannot fire. The map closes that window at runtime — an undeclared
+route is a refusal, never a hole. It also frees the declaration from the guard's shape:
+`requireRank` assumes roles order linearly, and the guard names in this document
+illustrate a rank model rather than mandate one (§1, §5) — capability strings and
+bitflags declare in the same map with the same fail-closed property.
+
+```ts
+// src/worker/middleware/authorize.ts — the map is the declaration; the middleware only reads it
+import { createMiddleware } from "hono/factory";
+import { ApiError } from "../services/util";
+import { meets, type Requirement } from "../services/auth"; // product-defined: a rank, a capability, a bitmask
+
+export const AUTHZ: Record<`${string} ${string}`, Requirement | "public"> = {
+  "GET /api/v1/projects": { auth: true },
+  "POST /api/v1/projects": { capability: "projects.create" },
+  "GET /api/v1/tours/:tourId": "public",
+};
+
+export const authorize = createMiddleware(async (c, next) => {
+  const route = c.req.matchedRoutes.at(-1); // the handler this request resolved to
+  const required = route && AUTHZ[`${c.req.method} ${route.path}`];
+  if (required === undefined) throw new ApiError("FORBIDDEN"); // undeclared fails closed
+  if (required !== "public" && !meets(c.var.principal, required)) {
+    throw new ApiError(c.var.principal ? "FORBIDDEN" : "UNAUTHORIZED");
+  }
+  await next();
+});
+```
 
 **An authenticated route family also mounts `requireAuth` at its prefix, before it mounts
 any route** — `family.use("*", requireAuth)` ahead of every `family.route(...)` — so an
@@ -510,7 +545,10 @@ walks the route table and fails on any route that declares nothing; and each gua
 route also has a test that the unguarded call is rejected.** — *Why:* a guard that
 regresses silently — a copy-pasted route missing its middleware — is invisible in review;
 the table walk catches the missing declaration before any request is made, and the
-request-level test catches a guard that is declared but wrong.
+request-level test catches a guard that is declared but wrong. A product on the
+authorization map (§2.2) walks the same table and checks each `METHOD path` against the map
+instead of `GUARDS`: the runtime `403` is the safety net, the walk is what turns an
+undeclared route into a CI failure before it ships.
 
 ```ts
 // test/worker/routes.test.ts
@@ -551,17 +589,22 @@ The `test:e2e` job (§8) runs separately and does not block merge until it's pro
 stable.
 
 **`check` runs, at minimum and in this order: `wrangler types`, the typecheck of all
-three TypeScript projects, a Prettier format check at defaults, and the boundary scripts
-(§5); the full list of mechanizable checks a repo wires into `check` or `npm test` is
-[architecture §13](architecture.md).** **Prettier at defaults
-is the only formatter; there is no linter beyond typecheck** (a Nuxt-based repo keeps
-its `withNuxt()` eslint config as a recorded convention, not a deviation). — *Why:* one
-opinionated formatter with no config file removes a whole category of style
-bikeshedding; typecheck already catches most of what a linter would otherwise exist for.
+three TypeScript projects, a Prettier format check at defaults, the one lint rule below,
+and the boundary scripts (§5); the full list of mechanizable checks a repo wires into
+`check` or `npm test` is [architecture §13](architecture.md).** **Prettier at defaults
+is the only formatter, and the only lint rule beyond typecheck is
+`@typescript-eslint/no-floating-promises`, type-aware, over `src/worker/`** (a Nuxt-based
+repo keeps its `withNuxt()` eslint config as a recorded convention, not a deviation). —
+*Why:* one opinionated formatter with no config file removes a whole category of style
+bikeshedding, and typecheck catches most of what a linter would otherwise exist for. The
+exception is the one thing it cannot see: a promise nobody awaits typechecks cleanly and,
+on Workers, is cancelled the moment the response returns unless it was handed to
+`ctx.waitUntil`. That is a correctness rule of this runtime, not a style, so it is the one
+rule that earns a linter — and it stays one rule, because a second would be style.
 
 ```json
 "scripts": {
-  "deploy:production": "npm run build && wrangler deploy"
+  "deploy:production": "CLOUDFLARE_ENV=production npm run build && wrangler deploy --env production"
 }
 ```
 
@@ -574,37 +617,59 @@ change into the one shape that breaks under it. It also makes a copy-only deploy
 schema-mutation event, and leaves a failed `wrangler deploy` sitting on a migration that
 has already applied and cannot be rolled back.
 
-**Top level is production. A second environment arrives later as `env.staging`, and
-nothing renames when it does.** — *Why:* wrangler deploys a named environment as
-`{name}-{env}` and treats the unnamed top level as a deployment of its own, so a product
-that starts with its configuration under `env.production` has to rename its Worker, its
-routes and its database on the day it grows a staging environment. Production at the top
-level makes that promotion purely additive — one `env.staging` block and two scripts — and
-leaves no unnamed root Worker sitting there waiting to be deployed by accident.
+**The unnamed top level of `wrangler.jsonc` is local development. Production lives under
+`env.production`, staging under `env.staging`, and neither is ever the default.** The top
+level holds the bindings local tooling reads — placeholder identifiers that name nothing
+remote — and is never deployed. — *Why:* [architecture §8](architecture.md) makes every
+script name the environment it targets so that reaching production is always something
+typed on purpose, and wrangler's own default has to obey the same rule. A bare
+`wrangler deploy` — typed from memory, or by an agent stepping past `package.json` —
+deploys the unnamed top level. With production there, the accident is a production
+release. With placeholders there, the accident is an inert `{slug}-dev` Worker that no
+route points at. Cloudflare's own guidance is the same: the root is a deployment of its
+own, and one you do not use is one you never deploy without `--env`. The reasoning 2.5 gave
+for the opposite layout — that starting under `env.production` forces a rename when
+staging appears — was wrong: a product deployed as `widgets` from `env.production` adds
+`widgets-staging` and renames nothing.
 
-**Top level is also what local tooling reads**: `wrangler dev` and the vitest worker pool
-pass no `--env`, so they see the unnamed environment. Local D1 and local storage are used
-regardless of the identifiers written there, so production ids in that block stay inert
-until a command says `--remote`. — *Why:* it means the configuration the tests run against
-is the one a reader is already looking at, rather than a third block kept in sync by hand.
+**Every named environment sets `name` explicitly: production is the slug itself, staging
+is `{slug}-staging`, and the top level is `{slug}-dev`.** — *Why:* left to derive, wrangler
+names a named environment `{name}-{env}` from the top level, which with a `-dev` root gives
+`widgets-dev-production`. Naming each block makes the deployed Worker's name a literal in
+the file rather than a derivation, keeps the production Worker on the slug
+([architecture §9](architecture.md)), and means a repo that already deploys as `widgets`
+moves its bindings under `env.production` and keeps its Worker, its routes and its
+database as they are.
 
-**One `wrangler.jsonc`, with `env.staging` inside it rather than a second config file.** —
-*Why:* not because the two environments share bindings — they cannot: every binding key is
-non-inheritable, and wrangler requires an environment that overrides one of them to
-override all of them, so each block repeats the full set either way. The reason is that one
-file is one diff: a new binding shows up in both environments in the same review, and
+**The top level is what local tooling reads**: `wrangler dev`, the Vite plugin without
+`CLOUDFLARE_ENV`, and the vitest worker pool without a `wrangler.environment` option all
+see the unnamed environment, and local D1 and local storage are keyed by whatever
+identifiers are written there. — *Why:* the configuration `dev` and the tests run against
+is then the one block that can reach nothing remote, so there is no identifier in it that a
+stray `--remote` could act on.
+
+**One `wrangler.jsonc`, with every environment inside it rather than a config file per
+environment.** — *Why:* not because the environments share bindings — they cannot: every
+binding key is non-inheritable, and wrangler requires an environment that overrides one of
+them to override all of them, so each block repeats the full set. The reason is that one
+file is one diff: a new binding shows up in every environment in the same review, and
 `--env` is a flag rather than a path, so no script can be pointed at the wrong file. A
 product whose *build* genuinely differs per environment records a second file as a
 deviation (§10).
 
 ```jsonc
-// wrangler.jsonc — a product promoted to staging. Production stays where it was.
+// wrangler.jsonc — production and staging, each named. The top level is local only.
 {
-  "name": "widgets",
-  "d1_databases": [{ "binding": "DB", "database_name": "widgets", "database_id": "…" }],
+  "name": "widgets-dev",
+  "d1_databases": [{ "binding": "DB", "database_name": "widgets-dev", "database_id": "local" }],
   "env": {
-    "staging": {
+    "production": {
+      "name": "widgets",
       // Repeated in full, because none of it is inherited.
+      "d1_databases": [{ "binding": "DB", "database_name": "widgets", "database_id": "…" }]
+    },
+    "staging": {
+      "name": "widgets-staging",
       "d1_databases": [
         { "binding": "DB", "database_name": "widgets-staging", "database_id": "…" }
       ]
@@ -615,19 +680,28 @@ deviation (§10).
 
 ```json
 "scripts": {
-  "deploy:staging": "npm run build && wrangler deploy --env staging",
+  "deploy:production": "CLOUDFLARE_ENV=production npm run build && wrangler deploy --env production",
+  "db:migrate:production": "wrangler d1 migrations apply widgets --remote --env production",
+  "deploy:staging": "CLOUDFLARE_ENV=staging npm run build && wrangler deploy --env staging",
   "db:migrate:staging": "wrangler d1 migrations apply widgets-staging --remote --env staging"
 }
 ```
 
-**A product with one environment declares no `env` block and carries no staging
-scripts.** — *Why:* the same rule `config/` already follows — nothing exists until it has
-a real consumer — and the promotion above costs one block and two lines whenever that
-changes.
+**Both halves of a deploy name the environment.** The Vite plugin flattens its build output
+to the environment `CLOUDFLARE_ENV` selects, and wrangler refuses to deploy that output
+under a different `--env`. — *Why:* a build for one environment deployed to another is the
+drift the flag exists to refuse, and naming it twice is what lets wrangler check.
+
+**A product with one environment declares `env.production` and nothing beside it; staging
+is one more block and two more scripts on the day it exists.** — *Why:* the same rule
+`config/` already follows — nothing exists until it has a real consumer — and the top
+level is not a spare environment to grow into, it is where local development lives.
 
 **`observability.enabled: true`, and every log line carries the request's
-`X-Request-Id`.** — *Why:* a production incident with no id linking a client-visible
-error to the Worker log that explains it turns debugging into grepping timestamps.
+`X-Request-Id`, validated at the boundary before it is adopted
+([conventions §4](conventions.md)).** — *Why:* a production incident with no id linking a
+client-visible error to the Worker log that explains it turns debugging into grepping
+timestamps — and an id the log search is keyed on is one the Worker has to own the shape of.
 
 **`console.*` never appears outside `src/worker/lib/log.ts`; every other file calls its
 wrapped `log.info` / `log.warn` / `log.error`.** — *Why:* one choke point is where
