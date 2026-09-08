@@ -201,12 +201,28 @@ DELETE /api/v1/projects/proj_130
 ### 4.1 Errors
 
 **Every error, at the correct HTTP status, is `{ error: { code, message,
-details?, traceId } }`.** `code` is SCREAMING_SNAKE from the registry in
-`src/shared/errors.ts` (§4.2); `message` is developer-facing, never rendered
-to a user (§7); `details` appears only on `422`, as a flat array. — *Why:*
-one shape lets `api.ts` throw a single `ApiError` class regardless of which
-route failed, and a `code` is what makes a localized, non-generic error
-message possible at all.
+params?, details?, traceId } }`.** `code` is SCREAMING_SNAKE from the registry
+in `src/shared/errors.ts` (§4.2), which also fixes the status the code is
+sent at; `message` is developer-facing, never rendered to a user (§7);
+`params` is a flat object of strings and numbers — the facts the translated
+sentence is about; `details` appears only on `422`, as a flat array. —
+*Why:* one shape lets `api.ts` throw a single `ApiError` class regardless of
+which route failed, and a `code` is what makes a localized, non-generic
+error message possible at all — provided the registry holds a code for the
+*refusal*, not just for the status (§4.2).
+
+```http
+DELETE /api/v1/playlists/pl_42
+409 Conflict
+{
+  "error": {
+    "code": "PLAYLIST_IN_USE",
+    "message": "3 screens still show this playlist.",
+    "params": { "count": 3 },
+    "traceId": "9f2c1e3a-7b1d-4a51-9c3a-9d3b6e2f9a01"
+  }
+}
+```
 
 ```http
 POST /api/v1/projects
@@ -224,16 +240,28 @@ POST /api/v1/projects
 }
 ```
 
-| Status | When |
-|---|---|
-| `400` | the request is malformed below the level schema validation can even parse (bad JSON, wrong content type) |
-| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) |
-| `403` | a `Principal` resolves but lacks the rank or scope the route requires |
-| `404` | the resource doesn't exist, or exists in a tenant this principal can't see ([ops §5](ops.md) — never leak existence across tenants) |
-| `409` | the request conflicts with current state (duplicate, stale write) |
-| `422` | the request is well-formed but fails schema validation — the one status that carries `details` |
-| `429` | rate limit exceeded ([ops §7](ops.md)) |
-| `500` | unhandled — the one status a client never branches on by `code` |
+**`params` carries what has no language: counts, user-entered names, limits,
+identifiers.** `count`, when present, selects the plural form (§7). A value
+from a fixed vocabulary — a role, a state, a tier — is never a param; it
+becomes its own code (§4.2). — *Why:* a translated sentence still has to say
+*which* three screens, and the only alternative is prose in the response,
+which §7 forbids.
+
+| Status | When | Codes |
+|---|---|---|
+| `400` | the request is malformed below the level schema validation can even parse (bad JSON, wrong content type) | `BAD_REQUEST`, or any product code registered at `400` |
+| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) | `UNAUTHORIZED` only |
+| `403` | a `Principal` resolves but lacks the rank or scope the route requires | `FORBIDDEN`, or any product code registered at `403` |
+| `404` | the resource doesn't exist, or exists in a tenant this principal can't see ([ops §5](ops.md) — never leak existence across tenants) | `NOT_FOUND`, or any product code registered at `404` |
+| `409` | the request conflicts with current state (duplicate, stale write, still in use) | `CONFLICT`, or any product code registered at `409` |
+| `422` | the request is well-formed but fails validation — the one status that carries `details` | `VALIDATION_FAILED`, or any product code registered at `422` |
+| `429` | rate limit exceeded ([ops §7](ops.md)) | `RATE_LIMITED` only |
+| `500` | unhandled — the one status a client never branches on by `code` | `INTERNAL` only |
+
+**`401`, `429` and `500` carry exactly one code each.** — *Why:* at each the
+client's reaction is fixed — go sign in, wait, report — so there is nothing
+product-specific to say, and one code per status is what lets the client key
+that reaction on the code rather than on the status (§7).
 
 **`X-Request-Id` is accepted from the client, generated if absent, echoed
 back as `X-Request-Id`, and carried in every error body as `traceId`.** —
@@ -244,26 +272,78 @@ id at all: it looks like observability while contributing none.
 
 ### 4.2 The error-code registry
 
-**`src/shared/errors.ts` is the sole registry of error codes**, imported by
-the Worker (to throw them) and the client (to render them, §7). A code used
-anywhere that isn't listed here is a bug, not a new code. — *Why:* the client
-renders errors by `code` alone, so a code the shared registry has never heard
-of reaches the user as a blank message rather than as a translation.
+**`src/shared/errors.ts` is the sole registry of error codes — a map of code
+to HTTP status, seeded with the eight below and grown by the product, one
+code per distinct refusal it can make.** The Worker imports it to throw
+(§4.3), the client to render (§7). A code used anywhere that isn't in the
+map is a typecheck failure, not a new code. — *Why:* the client renders by
+`code` alone, so a code the registry has never heard of would reach the user
+as a blank; and a status beside each code means the status of a refusal is
+decided once, here, where no route can disagree with another.
 
 ```ts
 // src/shared/errors.ts
-export const ERROR_CODES = [
-  "BAD_REQUEST",
-  "UNAUTHORIZED",
-  "FORBIDDEN",
-  "NOT_FOUND",
-  "CONFLICT",
-  "VALIDATION_FAILED",
-  "RATE_LIMITED",
-  "INTERNAL",
-] as const;
+export const ERRORS = {
+  // The starting set — one per status the API uses (§4.1). Thrown when the
+  // product has nothing more specific to say. UNAUTHORIZED, RATE_LIMITED and
+  // INTERNAL are the only codes ever registered at their status.
+  BAD_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  FORBIDDEN: 403,
+  NOT_FOUND: 404,
+  CONFLICT: 409,
+  VALIDATION_FAILED: 422,
+  RATE_LIMITED: 429,
+  INTERNAL: 500,
+  // The product's own refusals — one per distinct reason, named for the
+  // refusal, never for the route that raised it.
+  SCREEN_ALREADY_CLAIMED: 409,
+  PLAYLIST_IN_USE: 409,
+  MEDIA_NOT_READY: 409,
+  FORBIDDEN_FOR_MEMBER: 403,
+} as const;
 
-export type ErrorCode = (typeof ERROR_CODES)[number];
+export type ErrorCode = keyof typeof ERRORS;
+export type ErrorParams = Record<string, string | number>;
+```
+
+**A code names the refusal — not the route that raised it, not the status.**
+— *Why:* `PLAYLIST_IN_USE` is thrown by whichever route deletes a playlist
+that is still assigned and translated once; `DELETE_PLAYLIST_CONFLICT` would
+be translated once per route, and `CONFLICT` says nothing a `409` didn't.
+
+**A value from a fixed vocabulary becomes its own code, never a `params`
+value.** `FORBIDDEN_FOR_MEMBER`, not `FORBIDDEN` with `{ role: "member" }`.
+— *Why:* the wire value is an enum a translation cannot render — an English
+word inside a Japanese sentence, next to a menu that spells the same role
+管理者 — and a language that inflects around the noun cannot write the
+sentence at all. `params` carries what has no language: counts,
+user-entered names, limits, identifiers (§4.1).
+
+**`test/shared/errors.test.ts` proves that every supported locale's
+`errors` namespace (§7) holds exactly the registry's codes plus the two
+client-only keys `STALE_CLIENT` and `UNREACHABLE` — no missing entry, no
+orphan key.** — *Why:* the dictionaries are JSON, which the typechecker
+cannot hold against a TypeScript map; a test is what turns "mirrors the
+registry" from a sentence into a CI failure.
+
+```ts
+// test/shared/errors.test.ts
+import { describe, expect, it } from "vitest";
+import { ERRORS } from "#shared/errors";
+import { BRAND } from "#config/brand";
+import en from "@/i18n/en.json";
+import zhTW from "@/i18n/zh-TW.json";
+
+const CLIENT_ONLY = ["STALE_CLIENT", "UNREACHABLE"];
+const dictionaries: Record<string, { errors: Record<string, string> }> = { en, "zh-TW": zhTW };
+
+describe("the error dictionary", () => {
+  it.each(BRAND.locales.supported)("mirrors the registry in %s", (locale) => {
+    const expected = [...Object.keys(ERRORS), ...CLIENT_ONLY].sort();
+    expect(Object.keys(dictionaries[locale].errors).sort()).toEqual(expected);
+  });
+});
 ```
 
 **Request and response shapes validate with zod v4 in `src/shared/validators/`, consumed by both Worker routes and client forms.** — *Why:* a
@@ -272,47 +352,84 @@ drifting from what the Worker actually enforces.
 
 ### 4.3 Client boundary
 
-**`src/client/api.ts` is the only file in the SPA that calls `fetch`.** It
-sends `credentials: "same-origin"` (cookies are same-origin only —
+**`src/client/api.ts` is the only file in the SPA that calls `fetch` — and
+the only file that reads an error's `httpStatus`.** It sends
+`credentials: "same-origin"` (cookies are same-origin only —
 [ops §2](ops.md))
 and an `X-Request-Id`, and exposes `get`, `list`, `post`, `patch`, `del`:
 `get`, `post`, `patch` unwrap `item`; `list` returns the list envelope intact
 (it needs `nextCursor`); `del` resolves on 204 — each throwing a typed
 `ApiError` on a non-2xx response. — *Why:* one boundary makes "add a header
 to every request" a one-file change instead of a grep-and-fix across every
-component.
+component; and a component that can read the status is a component that will
+one day choose a message by it, which §7 forbids — so the field is named for
+what it is, and the boundary table ([architecture §13](architecture.md))
+holds the grep.
 
 The Worker throws its own `ApiError` (`src/worker/services/util.ts`,
 [architecture §4](architecture.md)): the same name on the opposite side of the
-wire, sharing only the `code` vocabulary from `src/shared/errors.ts` (§4.2).
+wire, sharing the registry in `src/shared/errors.ts` (§4.2). It takes the
+code, never the status — the registry decides that.
+
+```ts
+// src/worker/services/util.ts
+import { ERRORS, type ErrorCode, type ErrorParams } from "#shared/errors";
+
+export class ApiError extends Error {
+  readonly status: number;
+  constructor(
+    public readonly code: ErrorCode,
+    public readonly opts: { params?: ErrorParams; message?: string; details?: unknown[] } = {},
+  ) {
+    super(opts.message ?? code);
+    this.status = ERRORS[code];
+  }
+}
+
+// in a service:
+throw new ApiError("PLAYLIST_IN_USE", { params: { count: screens.length } });
+```
 
 ```ts
 // src/client/api.ts
-import type { ErrorCode } from "#shared/errors";
+import { APP_PATHS } from "#config/routes";
+import type { ErrorParams } from "#shared/errors";
 
 export class ApiError extends Error {
   constructor(
-    public status: number,
-    public code: ErrorCode,
-    message: string,
+    /** A registry code — or one this bundle predates, which §7 renders as STALE_CLIENT. */
+    public code: string,
+    /** For logs only. Never read outside this file: messages come from `code` (§7). */
+    public httpStatus: number,
     public traceId: string,
+    public params?: ErrorParams,
     public details?: { path: string; code: string; message: string }[],
   ) {
-    super(message);
+    super(code);
   }
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const requestId = crypto.randomUUID();
-  const res = await fetch(path, {
-    ...init,
-    credentials: "same-origin",
-    headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...init.headers },
-  });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Request-Id": requestId, ...init.headers },
+    });
+  } catch {
+    // fetch rejects only when no response came back at all — offline, DNS, a dropped connection.
+    throw new ApiError("UNREACHABLE", 0, requestId);
+  }
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const e = body?.error;
-    throw new ApiError(res.status, e?.code ?? "INTERNAL", e?.message ?? res.statusText, e?.traceId ?? requestId, e?.details);
+    // No envelope means the Worker never answered — a proxy page, a gateway error.
+    if (!e?.code) throw new ApiError("UNREACHABLE", res.status, requestId);
+    // The one reaction keyed on a code rather than rendered from it — and it is the code, not the 401.
+    if (e.code === "UNAUTHORIZED") location.assign(APP_PATHS.signIn);
+    throw new ApiError(e.code, res.status, e.traceId ?? requestId, e.params, e.details);
   }
   return body as T;
 }
@@ -425,11 +542,17 @@ and query params validate through the same zod v4 layer (§4.2, §5).
 ## 7. i18n
 
 **SPA messages live in `src/client/i18n/{en,zh-TW}.json`** (plus any other
-supported locale), nested keys, with an `errors.<CODE>` namespace mirroring
-`src/shared/errors.ts` (§4.2) key for key. The client renders an error by
-`code` only, never the Worker's `message`. — *Why:* a developer-facing
-`message` in English is exactly what a non-English user should never see; a
-`code` the dictionary already translates is the only safe thing to show.
+supported locale), nested keys, with an `errors.<CODE>` namespace holding
+every code in `src/shared/errors.ts` (§4.2) plus two client-only keys,
+`STALE_CLIENT` and `UNREACHABLE`. **The client renders an error by `code`
+alone, interpolating `params`, and never reads the HTTP status to choose a
+message**: an unknown code renders `STALE_CLIENT`, a response with no
+envelope renders `UNREACHABLE`, and the Worker's `message` is never shown. —
+*Why:* a developer-facing `message` in English is exactly what a non-English
+user should never see; and because the registry is shared and
+`test/shared/errors.test.ts` proves every locale mirrors it, an unknown code
+has exactly one cause — this bundle is older than the Worker — and the right
+message for that is "reload", not a guess shaped by the status.
 
 ```json
 {
@@ -442,8 +565,31 @@ supported locale), nested keys, with an `errors.<CODE>` namespace mirroring
     "CONFLICT": "That already exists.",
     "VALIDATION_FAILED": "Some fields need a second look.",
     "RATE_LIMITED": "Too many attempts — try again shortly.",
-    "INTERNAL": "Something went wrong on our end."
+    "INTERNAL": "Something went wrong on our end.",
+    "SCREEN_ALREADY_CLAIMED": "This screen is already claimed.",
+    "PLAYLIST_IN_USE": "One screen still shows this playlist. | {count} screens still show this playlist.",
+    "MEDIA_NOT_READY": "This media is still uploading.",
+    "FORBIDDEN_FOR_MEMBER": "Members can't do this — ask an admin.",
+    "STALE_CLIENT": "This app has been updated — reload to continue.",
+    "UNREACHABLE": "We couldn't reach the server. Check your connection and try again."
   }
+}
+```
+
+Plural syntax is the framework's (`|` in vue-i18n, `plural` in react-intl);
+what the standard fixes is that `count` is the selector (§4.1).
+
+```ts
+// src/client/lib/errors.ts — the one place a rejection becomes a sentence
+import { ApiError } from "@/api";
+import { t, te } from "@/i18n"; // te: "does this key exist" — vue-i18n's name; a React product aliases its own
+
+export function errorMessage(e: unknown): string {
+  if (e instanceof ApiError) {
+    const key = `errors.${e.code}`;
+    return te(key) ? t(key, e.params) : t("errors.STALE_CLIENT");
+  }
+  return t("errors.INTERNAL"); // not from the API at all — a bug in this bundle
 }
 ```
 

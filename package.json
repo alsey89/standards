@@ -1,6 +1,6 @@
 {
   "name": "standards",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "Product standards for alsey89 products \u2014 plain markdown, no build step.",
