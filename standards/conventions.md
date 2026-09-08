@@ -250,18 +250,26 @@ which §7 forbids.
 | Status | When | Codes |
 |---|---|---|
 | `400` | the request is malformed below the level schema validation can even parse (bad JSON, wrong content type) | `BAD_REQUEST`, or any product code registered at `400` |
-| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) | `UNAUTHORIZED` only |
+| `401` | no credential resolves to a `Principal` (missing or invalid session, key, or token) | `UNAUTHORIZED`, or any product code registered at `401` |
 | `403` | a `Principal` resolves but lacks the rank or scope the route requires | `FORBIDDEN`, or any product code registered at `403` |
 | `404` | the resource doesn't exist, or exists in a tenant this principal can't see ([ops §5](ops.md) — never leak existence across tenants) | `NOT_FOUND`, or any product code registered at `404` |
 | `409` | the request conflicts with current state (duplicate, stale write, still in use) | `CONFLICT`, or any product code registered at `409` |
 | `422` | the request is well-formed but fails validation — the one status that carries `details` | `VALIDATION_FAILED`, or any product code registered at `422` |
-| `429` | rate limit exceeded ([ops §7](ops.md)) | `RATE_LIMITED` only |
+| `429` | rate limit exceeded ([ops §7](ops.md)) | `RATE_LIMITED`, or any product code registered at `429` |
 | `500` | unhandled — the one status a client never branches on by `code` | `INTERNAL` only |
 
-**`401`, `429` and `500` carry exactly one code each.** — *Why:* at each the
-client's reaction is fixed — go sign in, wait, report — so there is nothing
-product-specific to say, and one code per status is what lets the client key
-that reaction on the code rather than on the status (§7).
+**`500` carries exactly one code.** — *Why:* an unhandled error has nothing to
+say by definition; anything the product can actually name is a refusal it
+handled, and a handled refusal belongs at a `4xx` with a code of its own.
+
+**Every other status is open, `401` and `429` included.** A caller who was
+never signed in and one whose session was revoked by a password change
+([ops §3](ops.md)) both get a `401`, and they need different sentences —
+"sign in to continue" against "your password changed, so you were signed out
+everywhere". — *Why:* the reaction being fixed is a weaker claim than the
+*sentence* being fixed, and the sentence is what a code buys. A status that
+carries one code recreates, one status over, exactly the flattening §4.2
+exists to end.
 
 **`X-Request-Id` is accepted from the client, generated if absent, echoed
 back as `X-Request-Id`, and carried in every error body as `traceId`.** —
@@ -285,8 +293,8 @@ decided once, here, where no route can disagree with another.
 // src/shared/errors.ts
 export const ERRORS = {
   // The starting set — one per status the API uses (§4.1). Thrown when the
-  // product has nothing more specific to say. UNAUTHORIZED, RATE_LIMITED and
-  // INTERNAL are the only codes ever registered at their status.
+  // product has nothing more specific to say. INTERNAL is the only code that
+  // is ever alone at its status.
   BAD_REQUEST: 400,
   UNAUTHORIZED: 401,
   FORBIDDEN: 403,
@@ -295,6 +303,11 @@ export const ERRORS = {
   VALIDATION_FAILED: 422,
   RATE_LIMITED: 429,
   INTERNAL: 500,
+  // Why the credential failed. The standard mandates the revocation these name
+  // (ops §3), so it seeds the codes rather than leaving every product to
+  // rediscover that "signed out" and "never signed in" are different sentences.
+  SESSION_EXPIRED: 401,
+  SESSION_REVOKED: 401,
   // The product's own refusals — one per distinct reason, named for the
   // refusal, never for the route that raised it.
   SCREEN_ALREADY_CLAIMED: 409,
@@ -305,6 +318,10 @@ export const ERRORS = {
 
 export type ErrorCode = keyof typeof ERRORS;
 export type ErrorParams = Record<string, string | number>;
+
+/** The status a code is registered at — build-time knowledge, not the wire (§4.3). */
+export const statusOf = (code: string): number | undefined =>
+  (ERRORS as Record<string, number>)[code];
 ```
 
 **A code names the refusal — not the route that raised it, not the status.**
@@ -375,6 +392,16 @@ one day choose a message by it, which §7 forbids — so the field is named for
 what it is, and the boundary table ([architecture §13](architecture.md))
 holds the grep.
 
+**`statusOf(code)` groups codes for *behavior* — never for a message.** It is
+called in `api.ts` and nowhere else (boundary table,
+[architecture §13](architecture.md)), which is what keeps it from becoming the
+back door to rendering by status. — *Why:* a client needs to know that several
+codes all mean "you must authenticate" without asking the response what its
+status was; reading the shared registry is build-time knowledge about a code,
+not wire data, so §7 holds intact. The moment it picks a *sentence*, §7 is
+broken, and confining the call to one file is what makes that a grep rather
+than a habit.
+
 The Worker throws its own `ApiError` (`src/worker/services/util.ts`,
 [architecture §4](architecture.md)): the same name on the opposite side of the
 wire, sharing the registry in `src/shared/errors.ts` (§4.2). It takes the
@@ -402,7 +429,7 @@ throw new ApiError("PLAYLIST_IN_USE", { params: { count: screens.length } });
 ```ts
 // src/client/api.ts
 import { APP_PATHS } from "#config/routes";
-import type { ErrorParams } from "#shared/errors";
+import { statusOf, type ErrorParams } from "#shared/errors";
 
 export class ApiError extends Error {
   constructor(
@@ -436,8 +463,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const e = body?.error;
     // No envelope means the Worker never answered — a proxy page, a gateway error.
     if (!e?.code) throw new ApiError("UNREACHABLE", res.status, requestId);
-    // The one reaction keyed on a code rather than rendered from it — and it is the code, not the 401.
-    if (e.code === "UNAUTHORIZED") location.assign(APP_PATHS.signIn);
+    // The one behavioral branch, and it reads the registry rather than this response:
+    // which codes mean "authenticate" is settled at build time. An unknown code lands
+    // nowhere, which is right — a bundle that predates the code renders "reload" (§7).
+    if (statusOf(e.code) === 401) location.assign(APP_PATHS.signIn);
     throw new ApiError(e.code, res.status, e.traceId ?? requestId, e.params, e.details);
   }
   return body as T;
@@ -569,6 +598,8 @@ message for that is "reload", not a guess shaped by the status.
   "errors": {
     "BAD_REQUEST": "That request didn't make sense to us.",
     "UNAUTHORIZED": "Sign in to continue.",
+    "SESSION_EXPIRED": "You were signed out after a while away. Sign in to pick up where you left off.",
+    "SESSION_REVOKED": "Your password changed, so you were signed out everywhere. Sign in again.",
     "FORBIDDEN": "You don't have access to this.",
     "NOT_FOUND": "We couldn't find that.",
     "CONFLICT": "That already exists.",
