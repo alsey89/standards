@@ -5,7 +5,7 @@ one deploy, one domain — serving three surfaces**: the SPA, the Worker (the
 JSON API), and the site. The three share a typed product config, one set of
 design tokens, and an internal app contract.
 
-**Standard version: 2.5** — changelog in [CHANGELOG.md](../CHANGELOG.md).
+**Standard version: 2.6** — changelog in [CHANGELOG.md](../CHANGELOG.md).
 
 This document is **normative**: it fixes the stack, the top-level layout, how
 the three surfaces share code, and how one Worker serves and builds them.
@@ -230,6 +230,7 @@ src/worker/
 │   └── <integration>.ts      #   webhooks, OAuth callbacks
 ├── middleware/               # principal resolution, guards, scope injection
 │   ├── principal.ts          #   resolvePrincipal + requireAuth/Rank/Scope
+│   ├── authorize.ts          #   the authorization map, if the product takes it (ops §2)
 │   └── scope.ts              #   the SOLE scoped-accessor construction site
 ├── services/                 # business logic — plain functions (repo, args)
 │   ├── auth.ts               #   session/authorization
@@ -468,8 +469,10 @@ then the complete list of paths the site may not claim.
    deliberately **no `not_found_handling`** in `wrangler.jsonc` — that's what
    makes misses invoke the Worker instead of blindly serving a SPA shell.
 4. The catch-all calls `isAppPath()` from `config/routes.ts` — the same
-   module the SPA and the site read. Match → serve `app.html` with **200**.
-   No match → serve the site's **`404.html` with 404**.
+   module the SPA and the site read, matching declared paths exactly
+   ([conventions §2](conventions.md)). Match → serve `app.html` with **200**.
+   No match, an undeclared `/app/…` included → serve the site's **`404.html`
+   with 404**.
 
 **`run_worker_first` is derived from `config/routes.ts`, and a test asserts
 the derived list equals the one in `wrangler.jsonc`.** — *Why:* the asset
@@ -512,14 +515,14 @@ npm run build
 |---|---|
 | `dev` | the app — Vite + Worker via `@cloudflare/vite-plugin` |
 | `build` | the three steps above, in order |
-| `deploy:production` | `build && wrangler deploy` — never migrates ([ops §9](ops.md)) |
-| `check` | `wrangler types`, then typecheck, format check, and the boundary scripts |
+| `deploy:production` | `CLOUDFLARE_ENV=production build && wrangler deploy --env production` — never migrates ([ops §9](ops.md)) |
+| `check` | `wrangler types`, then typecheck, format check, the floating-promise rule, and the boundary scripts |
 | `typecheck` | every tsconfig — client, worker, site |
 | `test` | vitest across the `test/` tiers |
 | `test:e2e` | playwright against a running `wrangler dev` |
 | `db:generate` | `drizzle-kit generate --name <snake_name>` |
 | `db:migrate:local` | `wrangler d1 migrations apply <db> --local` |
-| `db:migrate:production` | the same, `--remote` |
+| `db:migrate:production` | the same, `--remote --env production` |
 | `seed:local` | apply `seed.sql` to the local D1 |
 | `verify:serving` | the §7 status assertions against a running preview |
 
@@ -540,7 +543,9 @@ drifts to opposite meanings — `db:migrate` applying to a laptop in one repo an
 to production in another — so the command a person or an agent is most likely to
 run from memory becomes the one whose blast radius they cannot predict. Suffix
 everything that has a choice and there is no default left to get wrong; reaching
-production is then always something you typed on purpose.
+production is then always something you typed on purpose. The rule reaches below
+`package.json` too: the unnamed top level of `wrangler.jsonc` is local development,
+so a bare `wrangler deploy` typed past the scripts reaches nothing ([ops §9](ops.md)).
 
 **`:remote` is not an environment name.** — *Why:* it describes the mechanism,
 and it stops meaning anything the moment a product has two remote environments
@@ -548,7 +553,7 @@ to tell apart.
 
 - **`check` is the gate**, and it is composed, not ad hoc: `wrangler types`
   first (so `Env` is current), then the typecheck of all three projects, the
-  format check, and the boundary scripts (§13). CI runs
+  format check, the one lint rule ([ops §9](ops.md)), and the boundary scripts (§13). CI runs
   `check && test && build && verify:serving`, in that order
   ([ops §9](ops.md)). — *Why:*
   each stage is ordered by how fast it fails, and a check that only lives in
@@ -570,7 +575,7 @@ to tell apart.
 
 | File | Owns |
 |------|------|
-| `wrangler.jsonc` | Worker name, compat date, **bindings**, asset config (`assets.directory`, `run_worker_first`, no `not_found_handling`), custom domains in `routes`, `observability`, non-secret `vars`. |
+| `wrangler.jsonc` | Worker name and **bindings** per environment — the top level local, production and staging under `env` ([ops §9](ops.md)) — compat date, asset config (`assets.directory`, `run_worker_first`, no `not_found_handling`), custom domains in `routes`, `observability`, non-secret `vars`. |
 | `vite.config.ts` | SPA build + Worker bundling, the `app.html` input rename, bundle-time aliases (`@/*` → `src/client`, `#config` → `config/`). |
 | `tsconfig.json` | **Client** project: DOM libs, `jsx`, `@/*`, the `#*` imports; includes `src/client`, `src/shared`, `config`. |
 | `tsconfig.worker.json` | **Worker** project: generated runtime types, no DOM, the `#*` imports; includes `src/worker`, `src/shared`, `config`. |
@@ -597,10 +602,12 @@ to tell apart.
   is what makes an import that typechecks also bundle and also run.
 
 **One name, five places.** The repo directory, the `package.json` name, the
-`wrangler.jsonc` name, the D1 database name prefix, and `BRAND.slug` are the
-same string. — *Why:* that string is also the prefix on every cookie and API
-key, so when the five agree a stray value from another product is visibly
-wrong instead of quietly working.
+production Worker's name (`env.production.name` in `wrangler.jsonc`,
+[ops §9](ops.md)), the D1 database name prefix, and `BRAND.slug` are the same
+string; the top-level `name` is `{slug}-dev`, and it is never deployed. — *Why:*
+that string is also the prefix on every cookie and API key, so when the five
+agree a stray value from another product is visibly wrong instead of quietly
+working.
 
 **`config/brand.ts` is the source of that name and of the locale set:**
 
@@ -654,9 +661,10 @@ must prove before it ships. The structural part is fixed here — tests live in
 cover (§2). `npm test` runs the three vitest tiers; the playwright tier runs
 under `npm run test:e2e` and is the one tier CI does not block on (§8). Two
 tests are structural and every product carries them: `test/worker/routes.test.ts`
-walks the API route table and fails on any route that declares no guard
-([ops §8](ops.md)); `test/client/errors.test.ts` fails on any locale that does
-not mirror the error registry ([conventions §4](conventions.md)).
+walks the API route table and fails on any route that declares nothing — no guard,
+or no entry in the authorization map ([ops §8](ops.md)); `test/client/errors.test.ts`
+fails on any locale with an empty sentence for a code, the keys themselves being
+held by `satisfies` under typecheck ([conventions §4](conventions.md)).
 
 ---
 
@@ -705,10 +713,11 @@ with `""` on the next deploy.
 |---|---|
 | Every "lives only in" rule — the boundary table below | `scripts/check-boundaries.mjs` in `check`: one table of `{ pattern, within, allowed }` rows walked over the source tree |
 | `config/` two-consumer rule | count importing files per export across surfaces; fail under 2 |
-| Every API route declares a guard | `test/worker/routes.test.ts` walks the Hono route table ([ops §8](ops.md)) |
-| Every locale mirrors the error registry | `test/client/errors.test.ts` ([conventions §4](conventions.md)) |
+| Every API route declares who may call it | `test/worker/routes.test.ts` walks the Hono route table — against `GUARDS` or the authorization map ([ops §8](ops.md)); the map also refuses an undeclared route at runtime |
+| Every locale mirrors the error registry | `satisfies` in each dictionary, under `typecheck`; `test/client/errors.test.ts` holds the strings ([conventions §4](conventions.md)) |
 | `run_worker_first` agrees with `config/routes.ts` | a test compares the derived list with `wrangler.jsonc` (§7) |
 | Formatting | the format check in `check` — one formatter, defaults, no argument |
+| A Worker promise is awaited or handed to `ctx.waitUntil` | `no-floating-promises`, type-aware, over `src/worker/` in `check` ([ops §9](ops.md)) |
 | Serving model (§7) | `npm run verify:serving` — status table in the [bootstrap guide](../guides/bootstrap.md) |
 
 **The boundary table.** `scripts/check-boundaries.mjs` holds one row per "X

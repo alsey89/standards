@@ -2,6 +2,59 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.6 — 2026-09-08
+
+Eight corrections from a product repo's review of 2.5, all in one direction: where the
+standard left a default that could reach production, or a hole only a test would catch,
+it now fails closed. **Retroactive in the weak sense** for the wrangler layout and the
+exact-match catch-all — a repo keeps working, and each is a small edit worth making —
+and **additive** everywhere else.
+
+- **The unnamed top level of `wrangler.jsonc` is local development; production lives
+  under `env.production`, named the slug** (ops §9; architecture §8, §9; bootstrap guide).
+  2.5 put production at the top level and argued that starting under `env.production`
+  forces a rename when staging appears. That was wrong — a product deployed as `widgets`
+  from `env.production` adds `widgets-staging` and renames nothing — and it left
+  wrangler's own default pointing at production, which is exactly the unpredictable blast
+  radius 2.5's script rule exists to remove. Cloudflare's guidance is the same: a root you
+  do not use is one you never deploy without `--env`. Every environment block sets `name`
+  explicitly, so a repo already deployed as `widgets` moves its bindings under
+  `env.production` and keeps its Worker, routes and database. Both halves of a deploy
+  name the environment, `CLOUDFLARE_ENV` for the build and `--env` for the deploy.
+- **A route that declares no authorization fails closed at runtime** (ops §2, §8;
+  architecture §4, §11, §13). Per-route guards plus the table-walk test remain conforming;
+  a single authorization map read by one middleware, `403` for anything it does not name,
+  is the stronger mechanism and the default for a product with more than a rank. The
+  guard names in the standard illustrate a rank model and were never a mandate for one;
+  the map declares capabilities and bitflags the same way.
+- **`isAppPath()` matches declared paths exactly** (conventions §2; architecture §7;
+  bootstrap guide). A prefix match served a `200` shell for every undeclared path under
+  `/app` and left the client router to 404 — the stale deep link, the one URL that most
+  needs an honest status, logged as a success. An open-ended app path declares itself
+  with a trailing `/*`.
+- **Dictionaries are TypeScript, and `satisfies` holds the keys** (conventions §4, §7;
+  architecture §11, §13). 2.1 wrote the dictionaries as JSON and added a parity test
+  because the typechecker "cannot hold JSON against a TypeScript map" — while
+  architecture §3 already asked for a typed object. A `satisfies` clause rejects a
+  missing code and an orphan key in every locale at compile time; the test keeps the one
+  thing a type cannot see, an empty sentence. A JSON dictionary fed to a translation
+  platform is a recorded deviation.
+- **`X-Request-Id` is validated before it is adopted** (conventions §4; ops §9). Accepted
+  only when it matches `^[A-Za-z0-9_-]{1,64}$`, replaced otherwise. An id the Worker
+  writes into every log line and reflects in a header is one it has to own the shape of.
+- **One lint rule earns its place: `no-floating-promises`, type-aware, over `src/worker/`**
+  (ops §9; architecture §8, §13). A promise nobody awaits typechecks cleanly and, on
+  Workers, is cancelled when the response returns unless it went to `ctx.waitUntil`. That
+  is a correctness rule of this runtime, not a style, and the one thing typecheck cannot
+  hold.
+- **A named failure is not a `500`** (conventions §4). `500` still carries `INTERNAL`
+  alone. What the product can name and did not cause — an upstream timeout, a database
+  that would not answer — is `502`–`504` with a code of its own, open like every other
+  status. 2.4's rationale, that anything nameable belongs at a `4xx`, was too narrow.
+- **`config/routes.ts` exports at least six names, not exactly six** (conventions §2;
+  bootstrap guide). A further pure function over `APP_PATHS` keeps the one-file-to-grep
+  property; a further constant would not, and is still forbidden.
+
 ## 2.5 — 2026-09-08
 
 Environments and script names. **Retroactive in the weak sense**: a repo keeps working as

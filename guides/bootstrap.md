@@ -11,12 +11,12 @@ hand-assembled checklist, and the invariants in
 1. **Root scaffold:** `package.json` (the `site` workspace + the canonical
    scripts — `dev`, `build`, `deploy:production`, `check`, `typecheck`, `test`,
    `test:e2e`, `db:generate`, `db:migrate:local`, `db:migrate:production`,
-   `seed:local`, `verify:serving`; a new product declares no `env` block and no
-   staging scripts, [ops §9](../standards/ops.md)),
+   `seed:local`, `verify:serving`; a new product declares `env.production` and no
+   staging block or scripts, [ops §9](../standards/ops.md)),
    `vite.config.ts`, `wrangler.jsonc`, both tsconfigs,
    `app.html`, `scripts/merge-site.mjs`.
 2. **Cross-surface boundaries:** top-level `config/` (`brand.ts`, `routes.ts`
-   — pure typed data exporting `APP_BASE`, `APP_PATHS`, `PUBLIC_PREFIXES`,
+   — pure typed data exporting at least `APP_BASE`, `APP_PATHS`, `PUBLIC_PREFIXES`,
    `API_BASE`, `isAppPath()`, `fillPath()` —
    [conventions §2.1](../standards/conventions.md)) and `styles/`
    (`tokens.css` — the token contract is
@@ -30,7 +30,8 @@ hand-assembled checklist, and the invariants in
    construction site — `services/`, `db/{schema/,client.ts,scope.ts,global.ts}`),
    `shared/` (`errors.ts`, `validators/`, `types/`).
 4. **The serving contract:** the Worker catch-all using `isAppPath()` from
-   `config/routes.ts`, `app.html` as the SPA shell, no `not_found_handling`,
+   `config/routes.ts` — exact match against the declared paths — `app.html`
+   as the SPA shell, no `not_found_handling`,
    the site owning `index.html`, and `run_worker_first` in `wrangler.jsonc` —
    derived from `config/routes.ts`, never hand-mirrored, and asserted against
    it by `test/shared/routes.test.ts`.
@@ -67,6 +68,7 @@ npm run build && npm run preview
 /pricing/         200 (site)     /app/admin/<page>  200 (shell)
 /app/auth/sign-in 200 (shell)    /app/<res>/:id     200 (shell)
 /<res>            404 (site)     /garbage           404 (site)
+/app/nope         404 (site)     /app/<page>/       200 (shell)
 /api/v1/nope      404 (JSON)     /api/health        200 (JSON)
 ```
 
@@ -75,8 +77,9 @@ no template repo, so a new product writes the script once, following this
 table, and every later change to the serving model reruns it instead of
 retyping the checklist.
 
-The failure modes this catches: a SPA shell served with 200 for garbage URLs
-(missing catch-all logic), site pages falling through to the shell (asset
+The failure modes this catches: a SPA shell served with 200 for garbage URLs,
+under `/app` included (missing catch-all logic, or a prefix match where an
+exact one belongs), site pages falling through to the shell (asset
 merge broke), or app paths 404ing (drift between `config/routes.ts`, the
 `run_worker_first` list it derives, and the mounted routes — which
 `test/shared/routes.test.ts` should also catch).
