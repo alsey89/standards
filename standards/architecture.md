@@ -5,7 +5,7 @@ one deploy, one domain — serving three surfaces**: the SPA, the Worker (the
 JSON API), and the site. The three share a typed product config, one set of
 design tokens, and an internal app contract.
 
-**Standard version: 2.3** — changelog in [CHANGELOG.md](../CHANGELOG.md).
+**Standard version: 2.4** — changelog in [CHANGELOG.md](../CHANGELOG.md).
 
 This document is **normative**: it fixes the stack, the top-level layout, how
 the three surfaces share code, and how one Worker serves and builds them.
@@ -704,6 +704,7 @@ each binding or rule of its own. These are the seed rows:
 | `from "…/db/schema"` | `src/worker/` | `src/worker/db/**` | tables are reached only through accessors ([ops §5](ops.md)) |
 | `fetch(` | `src/client/` | `src/client/api.ts` | one client boundary ([conventions §4](conventions.md)) |
 | `.httpStatus` | `src/client/` | `src/client/api.ts` | messages by code, never by status ([conventions §7](conventions.md)) |
+| `statusOf(` | `src/client/` | `src/client/api.ts` | the registry groups codes for behavior, never for a message ([conventions §4](conventions.md)) |
 | a `"/app/…"` literal | `src/client/` | `src/client/router.ts` | paths declared once in `config/routes.ts` ([conventions §2](conventions.md)) |
 | `console.` | `src/worker/` | `src/worker/lib/log.ts` | one logger, `X-Request-Id` on every line ([ops §9](ops.md)) |
 | `window.`, `document.` | `src/worker/` | nowhere | the Worker never touches a DOM global (§4) |
@@ -737,6 +738,7 @@ const RULES = [
   { pattern: /from\s+["'][^"']*\/db\/schema["']/, within: "src/worker/", allowed: ["src/worker/db/"], message: "imports schema tables outside db/" },
   { pattern: /\bfetch\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "calls fetch() outside api.ts" },
   { pattern: /\.httpStatus\b/, within: "src/client/", allowed: ["src/client/api.ts"], message: "reads an error's HTTP status — render by code" },
+  { pattern: /\bstatusOf\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "groups codes by status outside api.ts — render by code" },
   { pattern: /["'`]\/app(\/|["'`])/, within: "src/client/", allowed: ["src/client/router.ts"], message: "hardcodes an app path — use config/routes.ts" },
   { pattern: /\bconsole\./, within: "src/worker/", allowed: ["src/worker/lib/log.ts"], message: "logs outside lib/log.ts" },
   { pattern: /\b(window|document)\.\w/, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker" },

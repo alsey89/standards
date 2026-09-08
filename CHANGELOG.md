@@ -2,6 +2,26 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.4 — 2026-09-08
+
+`401` and `429` open up. `500` stays the one status that carries a single code.
+**Additive**: `UNAUTHORIZED` and `RATE_LIMITED` remain valid at their statuses, so a repo
+that sends only those conforms unchanged and gains somewhere to grow.
+
+- 2.1 justified closing three statuses on the grounds that the client's *reaction* is
+  fixed. That is weaker than the claim that matters: the *sentence* is fixed. A caller who
+  was never signed in and one whose session a password change revoked (ops §3) both get a
+  `401` and deserve different sentences — so closing the status recreated, one status over,
+  the flattening the open registry exists to end. Same argument for `429`, where ops §7
+  already mandates separate limiter bindings.
+- Seeded at `401`: `SESSION_EXPIRED`, `SESSION_REVOKED`. `429` opens without new seed
+  codes; ops §7's bindings are the natural axis for a product to split on.
+- The client still never reads a response's status. `statusOf(code)` reads the shared
+  registry, which is build-time knowledge, and is confined to `api.ts` by a boundary row so
+  it cannot become the back door to rendering by status.
+- `500` stays closed on principle: an unhandled error has nothing to say, and anything the
+  product can name is a handled refusal belonging at a `4xx`.
+
 ## 2.3 — 2026-09-08
 
 Two fixes to what 2.1 shipped, both found by a product repo adopting it. **Neither is a

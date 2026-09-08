@@ -114,6 +114,15 @@ export const requireScope = (scope: string) => guard(createMiddleware(async (c, 
 export const allowPublic = guard(createMiddleware(async (_c, next) => next()));
 ```
 
+**A credential that fails says why it failed** — `SESSION_EXPIRED` for a session past
+its window (§3), `SESSION_REVOKED` for one deleted by a password change or a sign-out
+everywhere (§3), `UNAUTHORIZED` when nothing was presented at all. All three are `401`
+and all three send the caller to sign-in ([conventions §4](conventions.md)); they differ
+only in the sentence the reader gets, which is the point. — *Why:* this document already
+requires the revocation, so the client can either explain it or leave the reader
+wondering why they were signed out; distinguishing costs one branch at the place the
+session was looked up anyway.
+
 **A route handler never inspects `principal.kind`.** It composes `requireAuth`,
 `requireRank(min)`, or `requireScope(name)` and reads `c.var.principal` for the id it
 needs. — *Why:* a route that branches on "is this a session or a key" turns one
