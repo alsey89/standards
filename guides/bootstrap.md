@@ -9,9 +9,11 @@ hand-assembled checklist, and the invariants in
 ## The skeleton, in order
 
 1. **Root scaffold:** `package.json` (the `site` workspace + the canonical
-   scripts — `dev`, `build`, `deploy`, `check`, `typecheck`, `test`,
-   `test:e2e`, `db:generate`, `db:migrate`, `db:migrate:remote`, `seed`,
-   `verify:serving`), `vite.config.ts`, `wrangler.jsonc`, both tsconfigs,
+   scripts — `dev`, `build`, `deploy:production`, `check`, `typecheck`, `test`,
+   `test:e2e`, `db:generate`, `db:migrate:local`, `db:migrate:production`,
+   `seed:local`, `verify:serving`; a new product declares no `env` block and no
+   staging scripts, [ops §9](../standards/ops.md)),
+   `vite.config.ts`, `wrangler.jsonc`, both tsconfigs,
    `app.html`, `scripts/merge-site.mjs`.
 2. **Cross-surface boundaries:** top-level `config/` (`brand.ts`, `routes.ts`
    — pure typed data exporting `APP_BASE`, `APP_PATHS`, `PUBLIC_PREFIXES`,

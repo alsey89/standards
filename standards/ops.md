@@ -489,7 +489,8 @@ actually ships
 to is what makes a green suite mean something.
 
 **`test/worker/setup.ts` applies every file in `migrations/` to the test D1 binding
-before the suite runs** — the same files `db:migrate` applies in dev and prod. — *Why:*
+before the suite runs** — the same files `db:migrate:local` and `db:migrate:production`
+apply everywhere else (§9). — *Why:*
 a schema drift between test fixtures and real migrations is a bug in the migration, and
 running the real files is what surfaces it here instead of in production.
 
@@ -560,13 +561,69 @@ bikeshedding; typecheck already catches most of what a linter would otherwise ex
 
 ```json
 "scripts": {
-  "deploy": "npm run build && npm run db:migrate:remote && wrangler deploy"
+  "deploy:production": "npm run build && wrangler deploy"
 }
 ```
 
-**One `wrangler.jsonc`; a second deploy target is `env.production` inside it, never a
-second config file.** — *Why:* two files drift — a binding added to one and forgotten in
-the other; one file with an environment override can't drift on the bindings both share.
+**A deploy script builds and deploys. It never migrates.** Applying migrations is its own
+command, run deliberately, before the deploy that needs them. — *Why:* the two have to be
+separable to express the only sequence that makes a schema change safe — a migration lands
+while the *previous* code is still serving, and a destructive follow-up lands only once the
+new code is everywhere. A `deploy` that migrates cannot say that, so it pushes every schema
+change into the one shape that breaks under it. It also makes a copy-only deploy a
+schema-mutation event, and leaves a failed `wrangler deploy` sitting on a migration that
+has already applied and cannot be rolled back.
+
+**Top level is production. A second environment arrives later as `env.staging`, and
+nothing renames when it does.** — *Why:* wrangler deploys a named environment as
+`{name}-{env}` and treats the unnamed top level as a deployment of its own, so a product
+that starts with its configuration under `env.production` has to rename its Worker, its
+routes and its database on the day it grows a staging environment. Production at the top
+level makes that promotion purely additive — one `env.staging` block and two scripts — and
+leaves no unnamed root Worker sitting there waiting to be deployed by accident.
+
+**Top level is also what local tooling reads**: `wrangler dev` and the vitest worker pool
+pass no `--env`, so they see the unnamed environment. Local D1 and local storage are used
+regardless of the identifiers written there, so production ids in that block stay inert
+until a command says `--remote`. — *Why:* it means the configuration the tests run against
+is the one a reader is already looking at, rather than a third block kept in sync by hand.
+
+**One `wrangler.jsonc`, with `env.staging` inside it rather than a second config file.** —
+*Why:* not because the two environments share bindings — they cannot: every binding key is
+non-inheritable, and wrangler requires an environment that overrides one of them to
+override all of them, so each block repeats the full set either way. The reason is that one
+file is one diff: a new binding shows up in both environments in the same review, and
+`--env` is a flag rather than a path, so no script can be pointed at the wrong file. A
+product whose *build* genuinely differs per environment records a second file as a
+deviation (§10).
+
+```jsonc
+// wrangler.jsonc — a product promoted to staging. Production stays where it was.
+{
+  "name": "widgets",
+  "d1_databases": [{ "binding": "DB", "database_name": "widgets", "database_id": "…" }],
+  "env": {
+    "staging": {
+      // Repeated in full, because none of it is inherited.
+      "d1_databases": [
+        { "binding": "DB", "database_name": "widgets-staging", "database_id": "…" }
+      ]
+    }
+  }
+}
+```
+
+```json
+"scripts": {
+  "deploy:staging": "npm run build && wrangler deploy --env staging",
+  "db:migrate:staging": "wrangler d1 migrations apply widgets-staging --remote --env staging"
+}
+```
+
+**A product with one environment declares no `env` block and carries no staging
+scripts.** — *Why:* the same rule `config/` already follows — nothing exists until it has
+a real consumer — and the promotion above costs one block and two lines whenever that
+changes.
 
 **`observability.enabled: true`, and every log line carries the request's
 `X-Request-Id`.** — *Why:* a production incident with no id linking a client-visible

@@ -2,6 +2,30 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.5 — 2026-09-08
+
+Environments and script names. **Retroactive in the weak sense**: a repo keeps working as
+it is, and renaming scripts is a package.json edit, but the bare names this replaces are
+actively unsafe across repos, so it is worth doing rather than recording.
+
+- **Every script that could target more than one environment names the one it targets**,
+  the local one included (architecture §8). No bare `deploy`, `db:migrate` or `seed`.
+  Across this portfolio the bare name had already drifted to opposite meanings —
+  `db:migrate` applying to a laptop in one repo and to production in another — which makes
+  the most-typed command the one whose blast radius nobody can predict. `:remote` is
+  retired as a name: it describes the mechanism and says nothing once there are two remotes.
+- **Deploy never migrates** (ops §9). The two must be separable to express a migration that
+  lands while the previous code still serves, which is what makes a schema change safe.
+- **Top level is production; staging arrives later as `env.staging`** (ops §9). Wrangler
+  deploys a named environment as `{name}-{env}`, so config that starts under
+  `env.production` forces a Worker, route and database rename on the day staging appears.
+  A product with one environment declares no `env` block at all.
+- **The one-file rule keeps its conclusion and loses its reasoning.** It claimed two files
+  drift where one cannot, "on the bindings both share". Environments share no bindings:
+  every binding key is non-inheritable and wrangler makes overriding one mean overriding
+  all. One file is still the default, now for the reason that actually holds — one diff,
+  and `--env` is a flag rather than a path.
+
 ## 2.4 — 2026-09-08
 
 `401` and `429` open up. `500` stays the one status that carries a single code.
