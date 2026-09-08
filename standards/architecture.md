@@ -5,7 +5,7 @@ one deploy, one domain — serving three surfaces**: the SPA, the Worker (the
 JSON API), and the site. The three share a typed product config, one set of
 design tokens, and an internal app contract.
 
-**Standard version: 2.2** — changelog in [CHANGELOG.md](../CHANGELOG.md).
+**Standard version: 2.3** — changelog in [CHANGELOG.md](../CHANGELOG.md).
 
 This document is **normative**: it fixes the stack, the top-level layout, how
 the three surfaces share code, and how one Worker serves and builds them.
@@ -637,7 +637,7 @@ cover (§2). `npm test` runs the three vitest tiers; the playwright tier runs
 under `npm run test:e2e` and is the one tier CI does not block on (§8). Two
 tests are structural and every product carries them: `test/worker/routes.test.ts`
 walks the API route table and fails on any route that declares no guard
-([ops §8](ops.md)); `test/shared/errors.test.ts` fails on any locale that does
+([ops §8](ops.md)); `test/client/errors.test.ts` fails on any locale that does
 not mirror the error registry ([conventions §4](conventions.md)).
 
 ---
@@ -688,7 +688,7 @@ with `""` on the next deploy.
 | Every "lives only in" rule — the boundary table below | `scripts/check-boundaries.mjs` in `check`: one table of `{ pattern, within, allowed }` rows walked over the source tree |
 | `config/` two-consumer rule | count importing files per export across surfaces; fail under 2 |
 | Every API route declares a guard | `test/worker/routes.test.ts` walks the Hono route table ([ops §8](ops.md)) |
-| Every locale mirrors the error registry | `test/shared/errors.test.ts` ([conventions §4](conventions.md)) |
+| Every locale mirrors the error registry | `test/client/errors.test.ts` ([conventions §4](conventions.md)) |
 | `run_worker_first` agrees with `config/routes.ts` | a test compares the derived list with `wrangler.jsonc` (§7) |
 | Formatting | the format check in `check` — one formatter, defaults, no argument |
 | Serving model (§7) | `npm run verify:serving` — status table in the [bootstrap guide](../guides/bootstrap.md) |
@@ -717,6 +717,16 @@ only prose is a review comment, a rule that is a row is a CI failure. And the
 next binding a product adds gets a boundary for the cost of one line rather
 than a new script.
 
+**A row tests code, never prose: the script strips comments before it matches,
+and reports `file:line`.** — *Why:* a docblock explaining why `/app/manage/*`
+is load-bearing is not a hardcoded path, and a comment saying a `console.` call
+used to live here is not a log. Run against a real repo without this, the
+app-path row alone flagged 22 files of which 20 were commentary, and the
+rational response to twenty false failures is to delete the row — which leaves
+the product with less than it started with. Line numbers are what make the
+remaining hits triageable instead of a filename to go hunting in. (The
+standards repo's own checker blanks fenced code blocks for the same reason.)
+
 ```js
 // scripts/check-boundaries.mjs — runs in `check`; prints every violation, exits 1 on any
 import { existsSync, readdirSync, readFileSync } from "node:fs";
@@ -733,6 +743,15 @@ const RULES = [
   { pattern: /#shared\/|src\/shared/, within: "site/", allowed: [], message: "the site imports src/shared" },
 ];
 
+// Comments are prose, and a rule is about code. Block comments are blanked
+// rather than deleted so the line numbers below stay true to the file.
+const blank = (m) => m.replace(/[^\n]/g, " ");
+const stripComments = (text) =>
+  text
+    .replace(/\/\*[\s\S]*?\*\//g, blank)         // /* … */ and /** docblocks */
+    .replace(/<!--[\s\S]*?-->/g, blank)          // .vue and .astro templates
+    .replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");    // // …, but never the // in https://
+
 const EXTENSIONS = [".ts", ".tsx", ".vue", ".astro"];
 function* walk(dir) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -747,7 +766,9 @@ for (const rule of RULES) {
   if (!existsSync(rule.within)) continue;
   for (const file of walk(rule.within)) {
     if (rule.allowed.some((a) => file === a || (a.endsWith("/") && file.startsWith(a)))) continue;
-    if (rule.pattern.test(readFileSync(file, "utf8"))) failures.push(`${file}: ${rule.message}`);
+    stripComments(readFileSync(file, "utf8")).split("\n").forEach((line, i) => {
+      if (rule.pattern.test(line)) failures.push(`${file}:${i + 1}: ${rule.message}`);
+    });
   }
 }
 if (failures.length) { console.error(failures.join("\n")); process.exit(1); }
