@@ -70,7 +70,8 @@ export const PUBLIC_PREFIXES = ["/tours"] as const;
 export const API_BASE = "/api/v1";
 
 // One matcher per declared path: a `:param` matches one segment, a trailing `/*` matches
-// the rest. Nothing under /app that is not declared here reaches the shell.
+// the rest. Nothing under /app that is not declared here reaches the shell. Paths are not
+// regex-escaped: §2 makes segments kebab-case, so no metacharacter can occur in one.
 const APP_MATCHERS = Object.values(APP_PATHS).map(
   (path) => new RegExp(`^${path.replace(/:[a-zA-Z]+/g, "[^/]+").replace(/\/\*$/, "(?:/.*)?")}$`),
 );
@@ -281,14 +282,27 @@ which §7 forbids.
 | `500` | unhandled — the one status a client never branches on by `code` | `INTERNAL` only |
 | `502`, `503`, `504` | a dependency the product can name failed under a sound request — an upstream API, the database, the email provider | any product code registered there, e.g. `UPSTREAM_TIMEOUT` at `504` |
 
-**`500` carries exactly one code, and a failure the product can name is not a
-`500`.** — *Why:* an unhandled error has nothing to say by definition. What the
-product *can* name is one of two things: a refusal it handled, which belongs at
-a `4xx`, or a dependency that failed under it — an upstream timeout, a database
-that would not answer — which is neither the client's fault nor unknown, and
-belongs at `502`–`504` with a code of its own. Naming those gives the log and
-the dashboard a stable label without asking the client to branch on `500`,
-which stays the one status that means *we do not know*.
+**`500` carries exactly one code.** — *Why:* an unhandled error has nothing to
+say by definition, and what the product *can* name is one of three things. A
+refusal it handled belongs at a `4xx`. A dependency that failed under it — an
+upstream timeout, a database that would not answer — is neither the client's
+fault nor unknown, and belongs at `502`–`504` with a code of its own. A failure
+it detected in its own state is a `500` whose name belongs in the log, not on
+the wire (below). Naming the first two on the wire gives the log and the
+dashboard a stable label without asking the client to branch on `500`, which
+stays the one status that means *we do not know*.
+
+**A failure the product detects in its own state — a row that should exist and
+does not, a value no code path can have written — is `INTERNAL` on the wire,
+and its name travels as the error's `cause`.** `ApiError` takes `cause`
+(§4.3); the central `onError` writes it beside the request id on the log line
+([ops §9](ops.md)); `message` may repeat it for a developer reading the
+response; the client renders the `INTERNAL` sentence. — *Why:* the client
+cannot act on `TEMPLATE_CORRUPT` differently from `INTERNAL`, so a wire code
+for it would exist only for the log, and a name that exists for the log is a
+`cause`. Registering it instead hands every locale a duplicate sentence per
+code, or pushes the client into choosing a sentence by status group, which §7
+forbids.
 
 **Every other status is open, `401` and `429` included.** A caller who was
 never signed in and one whose session was revoked by a password change
@@ -300,7 +314,7 @@ carries one code recreates, one status over, exactly the flattening §4.2
 exists to end.
 
 **`X-Request-Id` is accepted from the client when it matches
-`^[A-Za-z0-9_-]{1,64}$`, generated otherwise, echoed back as `X-Request-Id`,
+`^[A-Za-z0-9_-]{8,64}$`, generated otherwise, echoed back as `X-Request-Id`,
 and carried in every error body as `traceId`.** A value that fails the match
 is dropped and replaced, never logged. — *Why:* fixing the exact casing here
 forecloses the `traceId`/`traceID` mismatch — one file emits one spelling,
@@ -309,7 +323,8 @@ is worse than having no trace id at all: it looks like observability while
 contributing none. And an id the Worker writes into every log line and reflects
 in a response header is one it has to own the shape of: unvalidated, whatever
 the client sent lands in the log search and comes back in the response, and the
-replacement costs one regex. A UUID, which `api.ts` sends (§4.3), passes.
+replacement costs one regex. The floor of eight is what makes an accepted id worth
+correlating on; a UUID, which `api.ts` sends (§4.3), passes.
 
 ### 4.2 The error-code registry
 
@@ -449,15 +464,17 @@ export class ApiError extends Error {
   readonly status: number;
   constructor(
     public readonly code: ErrorCode,
-    public readonly opts: { params?: ErrorParams; message?: string; details?: unknown[] } = {},
+    public readonly opts: { params?: ErrorParams; message?: string; details?: unknown[]; cause?: string } = {},
   ) {
-    super(opts.message ?? code);
+    super(opts.message ?? code, { cause: opts.cause });
     this.status = ERRORS[code];
   }
 }
 
 // in a service:
 throw new ApiError("PLAYLIST_IN_USE", { params: { count: screens.length } });
+// a failure in the product's own state: INTERNAL on the wire, named in the log (§4.1)
+throw new ApiError("INTERNAL", { cause: "TEMPLATE_CORRUPT", message: `template ${id} has no body` });
 ```
 
 ```ts

@@ -4,9 +4,9 @@ One version number spans the document set (`standards/`, `guides/`).
 
 ## 2.6 — 2026-09-08
 
-Eight corrections from a product repo's review of 2.5, all in one direction: where the
-standard left a default that could reach production, or a hole only a test would catch,
-it now fails closed. **Retroactive in the weak sense** for the wrangler layout and the
+Corrections from a product repo's review of 2.5, and from its re-review of this entry's
+first draft, all in one direction: where the standard left a default that could reach
+production, or a hole only a test would catch, it now fails closed. **Retroactive in the weak sense** for the wrangler layout and the
 exact-match catch-all — a repo keeps working, and each is a small edit worth making —
 and **additive** everywhere else.
 
@@ -19,14 +19,17 @@ and **additive** everywhere else.
   radius 2.5's script rule exists to remove. Cloudflare's guidance is the same: a root you
   do not use is one you never deploy without `--env`. Every environment block sets `name`
   explicitly, so a repo already deployed as `widgets` moves its bindings under
-  `env.production` and keeps its Worker, routes and database. Both halves of a deploy
-  name the environment, `CLOUDFLARE_ENV` for the build and `--env` for the deploy.
+  `env.production` and keeps its Worker, routes and database. Where the build is
+  environment-aware, as it is on this stack, both halves of a deploy name the
+  environment, `CLOUDFLARE_ENV` for the build and `--env` for the deploy.
 - **A route that declares no authorization fails closed at runtime** (ops §2, §8;
   architecture §4, §11, §13). Per-route guards plus the table-walk test remain conforming;
   a single authorization map read by one middleware, `403` for anything it does not name,
   is the stronger mechanism and the default for a product with more than a rank. The
   guard names in the standard illustrate a rank model and were never a mandate for one;
-  the map declares capabilities and bitflags the same way.
+  the map declares capabilities and bitflags the same way. The map's middleware matches
+  the map's own keys against the request; Hono's matched-route list ends in the shell
+  catch-all and is for the walk test only.
 - **`isAppPath()` matches declared paths exactly** (conventions §2; architecture §7;
   bootstrap guide). A prefix match served a `200` shell for every undeclared path under
   `/app` and left the client router to 404 — the stale deep link, the one URL that most
@@ -40,20 +43,31 @@ and **additive** everywhere else.
   thing a type cannot see, an empty sentence. A JSON dictionary fed to a translation
   platform is a recorded deviation.
 - **`X-Request-Id` is validated before it is adopted** (conventions §4; ops §9). Accepted
-  only when it matches `^[A-Za-z0-9_-]{1,64}$`, replaced otherwise. An id the Worker
+  only when it matches `^[A-Za-z0-9_-]{8,64}$`, replaced otherwise. An id the Worker
   writes into every log line and reflects in a header is one it has to own the shape of.
 - **One lint rule earns its place: `no-floating-promises`, type-aware, over `src/worker/`**
   (ops §9; architecture §8, §13). A promise nobody awaits typechecks cleanly and, on
   Workers, is cancelled when the response returns unless it went to `ctx.waitUntil`. That
   is a correctness rule of this runtime, not a style, and the one thing typecheck cannot
-  hold.
+  hold. `void promise` is the deliberate opt-out.
 - **A named failure is not a `500`** (conventions §4). `500` still carries `INTERNAL`
   alone. What the product can name and did not cause — an upstream timeout, a database
   that would not answer — is `502`–`504` with a code of its own, open like every other
-  status. 2.4's rationale, that anything nameable belongs at a `4xx`, was too narrow.
+  status. 2.4's rationale, that anything nameable belongs at a `4xx`, was too narrow. A
+  failure the product detects in its own state stays `INTERNAL` on the wire and is named
+  in the log as the error's `cause`; a wire code the client cannot act on exists only for
+  the log, and that is what `cause` is for.
 - **`config/routes.ts` exports at least six names, not exactly six** (conventions §2;
   bootstrap guide). A further pure function over `APP_PATHS` keeps the one-file-to-grep
   property; a further constant would not, and is still forbidden.
+- **The bootstrap serving table no longer contradicts ops §2.** `/api/v1/nope` was listed
+  as a `404`; anonymous under a family mount it is `401`, signed in it is `403` on the map
+  and `404` under guards, and a `verify:serving` written from the old row failed on a
+  conforming repo.
+- **Two boundary seed rows sharpened** (architecture §13). The `fetch(` row matched
+  `store.fetch(`, about thirty false hits in one repo; it now excludes a preceding dot or
+  word character while still catching `window.fetch(`. The DOM-global row's message says
+  a local named `window` is renamed, not allowlisted.
 
 ## 2.5 — 2026-09-08
 

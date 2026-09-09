@@ -729,12 +729,12 @@ each binding or rule of its own. These are the seed rows:
 | `env.DB`, `.prepare(`, `drizzle(` | `src/` | `src/worker/index.ts`, `src/worker/middleware/scope.ts`, `src/worker/db/**` | data access only via `db/` ([ops §5](ops.md)) |
 | any other `env.<BINDING>` | `src/` | the one file the product names in its row | every binding has one home |
 | `from "…/db/schema"` | `src/worker/` | `src/worker/db/**` | tables are reached only through accessors ([ops §5](ops.md)) |
-| `fetch(` | `src/client/` | `src/client/api.ts` | one client boundary ([conventions §4](conventions.md)) |
+| a bare `fetch(`, or `window.`/`globalThis.`/`self.fetch(` | `src/client/` | `src/client/api.ts` | one client boundary ([conventions §4](conventions.md)); a store action named `fetch` is not a network call |
 | `.httpStatus` | `src/client/` | `src/client/api.ts` | messages by code, never by status ([conventions §7](conventions.md)) |
 | `statusOf(` | `src/client/` | `src/client/api.ts` | the registry groups codes for behavior, never for a message ([conventions §4](conventions.md)) |
 | a `"/app/…"` literal | `src/client/` | `src/client/router.ts` | paths declared once in `config/routes.ts` ([conventions §2](conventions.md)) |
 | `console.` | `src/worker/` | `src/worker/lib/log.ts` | one logger, `X-Request-Id` on every line ([ops §9](ops.md)) |
-| `window.`, `document.` | `src/worker/` | nowhere | the Worker never touches a DOM global (§4) |
+| `window.`, `document.` | `src/worker/` | nowhere | the Worker never touches a DOM global (§4); a local named `window` is renamed, not allowlisted |
 | `#shared/`, `src/shared` | `site/` | nowhere | shared things live by consumer (§5) |
 
 **A product adds a row when it adds a binding or a rule; a seed row it drops
@@ -763,12 +763,13 @@ import { join } from "node:path";
 const RULES = [
   { pattern: /env\.DB\b|\.prepare\(|drizzle\(/, within: "src/", allowed: ["src/worker/index.ts", "src/worker/middleware/scope.ts", "src/worker/db/"], message: "touches the D1 binding outside db/" },
   { pattern: /from\s+["'][^"']*\/db\/schema["']/, within: "src/worker/", allowed: ["src/worker/db/"], message: "imports schema tables outside db/" },
-  { pattern: /\bfetch\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "calls fetch() outside api.ts" },
+  // A call, not a name: `store.fetch(` is a store action; `window.fetch(` is the network.
+  { pattern: /(?:(?<![\w.])|(?<=\b(?:window|globalThis|self)\.))fetch\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "calls fetch() outside api.ts" },
   { pattern: /\.httpStatus\b/, within: "src/client/", allowed: ["src/client/api.ts"], message: "reads an error's HTTP status — render by code" },
   { pattern: /\bstatusOf\s*\(/, within: "src/client/", allowed: ["src/client/api.ts"], message: "groups codes by status outside api.ts — render by code" },
   { pattern: /["'`]\/app(\/|["'`])/, within: "src/client/", allowed: ["src/client/router.ts"], message: "hardcodes an app path — use config/routes.ts" },
   { pattern: /\bconsole\./, within: "src/worker/", allowed: ["src/worker/lib/log.ts"], message: "logs outside lib/log.ts" },
-  { pattern: /\b(window|document)\.\w/, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker" },
+  { pattern: /\b(window|document)\.\w/, within: "src/worker/", allowed: [], message: "touches a DOM global in the Worker — a local named window or document is renamed, not allowed" },
   { pattern: /#shared\/|src\/shared/, within: "site/", allowed: [], message: "the site imports src/shared" },
 ];
 

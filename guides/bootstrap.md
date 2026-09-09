@@ -69,8 +69,15 @@ npm run build && npm run preview
 /app/auth/sign-in 200 (shell)    /app/<res>/:id     200 (shell)
 /<res>            404 (site)     /garbage           404 (site)
 /app/nope         404 (site)     /app/<page>/       200 (shell)
-/api/v1/nope      404 (JSON)     /api/health        200 (JSON)
+/api/health       200 (JSON)     /api/v1/nope       401 (JSON) anonymous — see below
 ```
+
+`/api/v1/nope` is the one row that depends on the auth model, and a script that
+asserts a fixed `404` there fails on a conforming repo. Anonymous, under an
+authenticated family mount, it is `401` whether or not the path exists
+([ops §2](../standards/ops.md)); outside any family mount it is `404`. Signed in,
+it is `403` on the authorization map and `404` under per-route guards.
+`verify:serving` asserts what the product's own mounts and model produce.
 
 This table is what `verify:serving` should assert once it is wired — there is
 no template repo, so a new product writes the script once, following this

@@ -159,11 +159,18 @@ export const AUTHZ: Record<`${string} ${string}`, Requirement | "public"> = {
   "GET /api/v1/tours/:tourId": "public",
 };
 
+// The map matches its own keys, the way config/routes.ts matches APP_PATHS. Hono's
+// matchedRoutes is every middleware and handler the request touched, in registration
+// order, so its last entry is the shell catch-all; that table is for the walk test (§8).
+const RULES = Object.entries(AUTHZ).map(([key, required]) => {
+  const [method, pattern] = key.split(" ");
+  return { method, re: new RegExp(`^${pattern.replace(/:[a-zA-Z]+/g, "[^/]+")}$`), required };
+});
+
 export const authorize = createMiddleware(async (c, next) => {
-  const route = c.req.matchedRoutes.at(-1); // the handler this request resolved to
-  const required = route && AUTHZ[`${c.req.method} ${route.path}`];
-  if (required === undefined) throw new ApiError("FORBIDDEN"); // undeclared fails closed
-  if (required !== "public" && !meets(c.var.principal, required)) {
+  const rule = RULES.find((r) => r.method === c.req.method && r.re.test(c.req.path));
+  if (!rule) throw new ApiError("FORBIDDEN"); // undeclared fails closed
+  if (rule.required !== "public" && !meets(c.var.principal, rule.required)) {
     throw new ApiError(c.var.principal ? "FORBIDDEN" : "UNAUTHORIZED");
   }
   await next();
@@ -600,7 +607,10 @@ bikeshedding, and typecheck catches most of what a linter would otherwise exist 
 exception is the one thing it cannot see: a promise nobody awaits typechecks cleanly and,
 on Workers, is cancelled the moment the response returns unless it was handed to
 `ctx.waitUntil`. That is a correctness rule of this runtime, not a style, so it is the one
-rule that earns a linter — and it stays one rule, because a second would be style.
+rule that earns a linter — and it stays one rule, because a second would be style. A
+detachment that is deliberate says so in code: `void promise` is the rule's opt-out for
+work that may be dropped, and `ctx.waitUntil(promise)` is for work that must outlive the
+response.
 
 ```json
 "scripts": {
@@ -687,10 +697,13 @@ deviation (§10).
 }
 ```
 
-**Both halves of a deploy name the environment.** The Vite plugin flattens its build output
-to the environment `CLOUDFLARE_ENV` selects, and wrangler refuses to deploy that output
-under a different `--env`. — *Why:* a build for one environment deployed to another is the
-drift the flag exists to refuse, and naming it twice is what lets wrangler check.
+**Where the build is environment-aware, both halves of a deploy name the environment.** On
+this stack it is: the Vite plugin flattens its build output to the environment
+`CLOUDFLARE_ENV` selects, and wrangler refuses to deploy that output under a different
+`--env`. A repo whose Worker is bundled by wrangler itself has nothing for `CLOUDFLARE_ENV`
+to select, and `--env` alone is the whole rule there. — *Why:* a build for one environment
+deployed to another is the drift the flag exists to refuse, and naming it twice is what
+lets wrangler check.
 
 **A product with one environment declares `env.production` and nothing beside it; staging
 is one more block and two more scripts on the day it exists.** — *Why:* the same rule
@@ -699,9 +712,11 @@ level is not a spare environment to grow into, it is where local development liv
 
 **`observability.enabled: true`, and every log line carries the request's
 `X-Request-Id`, validated at the boundary before it is adopted
-([conventions §4](conventions.md)).** — *Why:* a production incident with no id linking a
-client-visible error to the Worker log that explains it turns debugging into grepping
-timestamps — and an id the log search is keyed on is one the Worker has to own the shape of.
+([conventions §4](conventions.md)); an error line also carries the `cause` the `ApiError`
+was thrown with, which is where a `500` keeps its name.** — *Why:* a production incident
+with no id linking a client-visible error to the Worker log that explains it turns
+debugging into grepping timestamps — and an id the log search is keyed on is one the
+Worker has to own the shape of.
 
 **`console.*` never appears outside `src/worker/lib/log.ts`; every other file calls its
 wrapped `log.info` / `log.warn` / `log.error`.** — *Why:* one choke point is where
