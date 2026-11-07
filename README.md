@@ -3,7 +3,7 @@
 The canonical standards for [alsey89](https://github.com/alsey89) products. Plain
 markdown, no build step — what you read here *is* the published artifact.
 
-**Current version: Product Standard v2.6.**
+**Current version: Product Standard v2.7.**
 
 | Document | What it fixes |
 |---|---|

@@ -283,16 +283,30 @@ a provable revocation guarantee for a latency win nothing has yet measured.
 
 ## 4. Passwords and OAuth
 
-**Passwords are hashed with scrypt via `node:crypto`, async, at `N=2¹⁴, r=8, p=1,
+**Passwords are hashed with scrypt via `node:crypto`, async, at `N=2¹⁴, r=8, p=5,
 keylen=64`, stored as a PHC string:**
 
 ```
-$scrypt$ln=14,r=8,p=1$<base64 salt>$<base64 hash>
+$scrypt$ln=14,r=8,p=5$<base64 salt>$<base64 hash>
 ```
 
 — *Why:* scrypt's memory-hardness is what makes an offline crack of a stolen hash
 expensive, and `node:crypto` is the platform's own implementation, so there is no
-third-party hashing dependency to keep current.
+third-party hashing dependency to keep current. The parameters are OWASP's minimum for
+scrypt at 16 MiB. OWASP lists `N=2¹⁷, p=1` through `N=2¹³, p=10` as equivalent
+defences. `N=2¹⁷` needs 128 MiB, which is a Worker isolate's entire memory limit, so
+`N=2¹⁴` is the most memory an isolate can spend on one hash. `p` is raised to make up
+the rest. `p` costs CPU, not memory: the lanes run one after another in the same
+`128·N·r` bytes. At `p=1` the work is a fifth of OWASP's minimum.
+
+**Argon2id is not the default, even though OWASP ranks it first.** Workers'
+`node:crypto` does not implement `argon2`. A WebAssembly build has to be packaged
+specifically for Workers, because the runtime refuses to compile Wasm at request time. It
+would also put a third-party dependency on the one code path where a defect is a
+credential leak. When `node:crypto` gains `argon2`, it becomes the default, and the
+rehash rule below migrates accounts to it. — *Why:* scrypt at these parameters is
+already memory-hard at OWASP's minimum. The step from scrypt to Argon2id is small next to
+the cost of an unaudited dependency on the auth path.
 
 **A hash is rehashed on the next successful sign-in if its stored parameters are weaker
 than current config.** — *Why:* the PHC string records the parameters it was created
@@ -319,10 +333,23 @@ product that can't take the platform assumption below. — *Why:* WebCrypto's PB
 with no compatibility flag; the trade is weaker memory-hardness, which is why it's a
 deviation and not the default.
 
+**A PBKDF2 product hashes at no more than 100,000 iterations, and a worker test asserts
+that ceiling.** Cloudflare's edge rejects anything above it
+(`NotSupportedError: Pbkdf2 failed: iteration counts above 100000 are not supported`).
+The local workerd behind `vitest-pool-workers` does not enforce the cap, so a higher count
+passes every test and makes every production sign-in a `500`. — *Why:* a product repo
+shipped 600,000, OWASP's figure for PBKDF2-HMAC-SHA256, and found the cap in production.
+The ceiling also states the deviation's real cost: one sixth of OWASP's work factor, with
+no memory-hardness.
+
 **Platform assumptions: Workers Paid; compatibility date ≥ 2026-08-04, or
 `nodejs_compat` explicitly enabled.** — *Why:* `node:crypto`'s scrypt needs Node
-compatibility, and its cost at `N=2¹⁴` needs the higher CPU-time ceiling Workers Paid
-grants — the Free plan can hit its wall under load.
+compatibility. Its CPU cost at these parameters is well past the Free plan's 10 ms per
+request: about 90 ms per hash at `p=5`, and 19 ms at `p=1`, measured with Node on a 2024
+laptop. Only the Workers Paid CPU ceiling covers that. PBKDF2 at 100,000 iterations
+measured 7.5 ms on the same machine. That is the deviation's actual reason to exist: it
+is the one conforming hash that can fit a Free-plan request. Edge hardware is not that
+laptop, so a Free-plan product measures it on a deployed Worker before relying on it.
 
 ### 4.1 OAuth
 

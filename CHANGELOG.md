@@ -2,6 +2,34 @@
 
 One version number spans the document set (`standards/`, `guides/`).
 
+## 2.7 — 2026-11-07
+
+Password hashing is raised to OWASP's minimum. This came out of a product repo's
+re-kickoff review, which asked which hash is actually better and found that the
+standard's own parameters fell short of it. **Retroactive in the weak sense:** a repo
+hashing at `p=1` keeps working, and raising `p` is a one-constant change. The existing
+rehash-on-sign-in rule then migrates every active account with no reset. Worth doing
+rather than recording.
+
+- **scrypt is `N=2¹⁴, r=8, p=5`, not `p=1`** (ops §4). OWASP's scrypt minimums trade
+  memory against parallelism, from `N=2¹⁷, p=1` (128 MiB) down to `N=2¹³, p=10`. A Worker
+  isolate cannot spend 128 MiB on one hash, so `N=2¹⁴` (16 MiB) is the practical
+  ceiling, and OWASP pairs it with `p=5`. 2.0–2.6's `p=1` did a fifth of that work. `p`
+  costs CPU, not memory: about 90 ms per hash instead of 19 ms, measured with Node on a
+  2024 laptop, paid once per sign-in under the Workers Paid ceiling ops §4 already
+  assumes.
+- **Argon2id is named, and deliberately not the default** (ops §4). It is OWASP's first
+  choice, but Workers' `node:crypto` does not implement it, and the Wasm alternative
+  means a third-party dependency on the auth path. It becomes the default when
+  `node:crypto` gains it, and the rehash rule migrates accounts to it.
+- **The PBKDF2 deviation is capped at 100,000 iterations, and a test holds the cap**
+  (ops §4). Cloudflare's edge rejects higher counts. Local workerd does not, so a
+  higher count passes every test and fails every production sign-in, which is how one
+  product repo found the cap. The section now also gives the deviation's actual reason
+  to exist: at 100,000 iterations (7.5 ms on the same laptop) it is the one conforming
+  hash that can fit a Free-plan request. Its stated "trade" is now quantified as one
+  sixth of OWASP's PBKDF2 work factor, with no memory-hardness.
+
 ## 2.6 — 2026-09-08
 
 Corrections from a product repo's review of 2.5, and from its re-review of this entry's
